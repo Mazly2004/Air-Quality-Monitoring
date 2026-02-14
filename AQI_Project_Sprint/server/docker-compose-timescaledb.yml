@@ -1,0 +1,101 @@
+version: '3.8'
+
+# TimescaleDB Research Server
+# This is a third, independent database for research comparison with InfluxDB
+# Deploy on: University lab server or cloud VM (NOT on Raspberry Pis)
+# Purpose: Compare relational time-series DB (TimescaleDB) vs specialized (InfluxDB)
+
+services:
+  # TimescaleDB (PostgreSQL with time-series extension)
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: timescaledb_research
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=airquality_research
+      - POSTGRES_USER=aqm_user
+      - POSTGRES_PASSWORD=change_this_password_in_production
+      # TimescaleDB-specific settings
+      - TIMESCALEDB_TELEMETRY=off
+      - TS_TUNE_MEMORY=4GB
+      - TS_TUNE_NUM_CPUS=2
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+      - ./timescaledb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - aqm_research
+    command: postgres -c shared_preload_libraries=timescaledb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aqm_user -d airquality_research"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Telegraf - Data collector subscribing to BOTH MQTT brokers
+  telegraf_research:
+    image: telegraf:latest
+    container_name: telegraf_research
+    restart: unless-stopped
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    volumes:
+      - ./timescaledb/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    networks:
+      - aqm_research
+    environment:
+      # Pass database credentials to Telegraf
+      - PGHOST=timescaledb
+      - PGPORT=5432
+      - PGDATABASE=airquality_research
+      - PGUSER=aqm_user
+      - PGPASSWORD=change_this_password_in_production
+      # MQTT broker addresses (update these to match your Pis)
+      - MQTT_PRIMARY=tcp://172.20.10.10:1883
+      - MQTT_BACKUP=tcp://172.20.10.11:1883
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin_research
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@airquality.local
+      - PGADMIN_DEFAULT_PASSWORD=admin_password_change_this
+      - PGADMIN_CONFIG_SERVER_MODE=False
+    volumes:
+      - pgadmin-data:/var/lib/pgadmin
+    networks:
+      - aqm_research
+    depends_on:
+      - timescaledb
+
+  # Optional: Grafana for TimescaleDB visualization
+  grafana_timescale:
+    image: grafana/grafana-oss:latest
+    container_name: grafana_timescale
+    restart: unless-stopped
+    ports:
+      - "3001:3000"  # Different port to avoid conflict with Pi Grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=
+    volumes:
+      - grafana-timescale-data:/var/lib/grafana
+    networks:
+      - aqm_research
+    depends_on:
+      - timescaledb
+
+networks:
+  aqm_research:
+    driver: bridge
+
+volumes:
+  timescaledb-data:
+  pgadmin-data:
+  grafana-timescale-data:

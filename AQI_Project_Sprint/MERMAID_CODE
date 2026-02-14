@@ -1,0 +1,60 @@
+graph TB
+    subgraph "ESP32 Sensor Nodes"
+        ESP1["ESP32 Node 1<br/>ZPHS01B Sensor"]
+        ESP2["ESP32 Node 2<br/>ZPHS01B Sensor"]
+        ESP3["ESP32 Node N<br/>ZPHS01B Sensor"]
+    end
+    
+    subgraph "Automatic Failover Logic"
+        subgraph PI1["Raspberry Pi 1 - PRIMARY<br/>172.20.10.10"]
+            MQTT1["Mosquitto MQTT"]
+            DB1["InfluxDB"]
+            TEL1["Telegraf"]
+            GRAF1["Grafana"]
+            STATUS1["🟢 ACTIVE"]
+        end
+        
+        subgraph PI2["Raspberry Pi 2 - BACKUP<br/>172.20.10.11"]
+            MQTT2["Mosquitto MQTT"]
+            DB2["InfluxDB"]
+            TEL2["Telegraf"]
+            GRAF2["Grafana"]
+            STATUS2["🟡 STANDBY"]
+        end
+    end
+    
+    %% Normal Operation (Primary Path)
+    ESP1 -->|"Normal Operation<br/>(Green Solid)"| MQTT1
+    ESP2 -->|"Normal Operation"| MQTT1
+    ESP3 -->|"Normal Operation"| MQTT1
+    
+    %% Failover Path (Backup)
+    ESP1 -.->|"Automatic Failover<br/>(Orange Dashed)"| MQTT2
+    ESP2 -.->|"Automatic Failover"| MQTT2
+    ESP3 -.->|"Automatic Failover"| MQTT2
+    
+    %% Data Flow within Primary
+    MQTT1 --> TEL1
+    TEL1 --> DB1
+    DB1 --> GRAF1
+    
+    %% Data Flow within Backup
+    MQTT2 --> TEL2
+    TEL2 --> DB2
+    DB2 --> GRAF2
+    
+    %% Health Check / Recovery
+    PI1 <-.->|"Health Check<br/>Primary Retry: 60s"| PI2
+    
+    %% Annotations
+    ESP1 -.->|"Retry Logic:<br/>3 attempts → failover"| PI1
+    
+    classDef primary fill:#2d5016,stroke:#4caf50,stroke-width:3px,color:#fff
+    classDef backup fill:#5a3a0f,stroke:#ff9800,stroke-width:3px,color:#fff
+    classDef sensor fill:#1a237e,stroke:#3f51b5,stroke-width:2px,color:#fff
+    classDef service fill:#34495e,stroke:#7f8c8d,stroke-width:1px,color:#fff
+    
+    class PI1 primary
+    class PI2 backup
+    class ESP1,ESP2,ESP3 sensor
+    class MQTT1,DB1,TEL1,GRAF1,MQTT2,DB2,GRAF2,TEL2 service

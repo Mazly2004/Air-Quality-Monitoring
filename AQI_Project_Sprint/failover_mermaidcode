@@ -1,0 +1,33 @@
+sequenceDiagram
+    participant ESP as ESP32 Nodes
+    participant Pi1 as Raspberry Pi 1<br/>(Primary)<br/>172.20.10.10
+    participant Pi2 as Raspberry Pi 2<br/>(Backup)<br/>172.20.10.11
+    
+    Note over ESP,Pi1: Normal Operation
+    ESP->>Pi1: Publish sensor data
+    Pi1->>ESP: ACK
+    Note over Pi1: Store in InfluxDB<br/>Display on Grafana
+    
+    Note over ESP,Pi2: Pi 1 Failure Detected
+    ESP-xPi1: Connection attempt 1 (FAIL)
+    ESP-xPi1: Connection attempt 2 (FAIL)
+    ESP-xPi1: Connection attempt 3 (FAIL)
+    
+    Note over ESP: Automatic Failover<br/>Triggered
+    ESP->>Pi2: Connect to backup broker
+    Pi2->>ESP: ACK
+    ESP->>Pi2: Publish sensor data
+    Note over Pi2: Store in backup InfluxDB
+    
+    Note over ESP,Pi2: Background Primary Retry
+    loop Every 60 seconds
+        ESP->>Pi1: Check if primary available
+        Pi1--xESP: Still unavailable
+    end
+    
+    Note over ESP,Pi1: Pi 1 Recovers
+    ESP->>Pi1: Primary check (SUCCESS!)
+    Pi1->>ESP: ACK
+    Note over ESP: Auto-reconnect to Primary
+    ESP->>Pi1: Resume normal operation
+    Note over Pi1: Back to primary database

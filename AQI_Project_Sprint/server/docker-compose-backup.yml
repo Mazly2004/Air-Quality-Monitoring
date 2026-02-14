@@ -1,0 +1,78 @@
+version: '3.8'
+
+# Raspberry Pi 2 - BACKUP SERVER
+# This is the backup/failover server that accepts data when Pi 1 is unavailable
+# Each service runs independently so data is preserved during primary outages
+
+services:
+  # 1. BACKUP MQTT Broker
+  # Accepts ESP32 connections when primary broker (Pi 1) is down
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto_backup
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
+    networks:
+      - aqm_backup
+
+  # 2. BACKUP Time-Series Database
+  # Stores sensor data when primary database (Pi 1) is unavailable
+  # Data here can be manually exported and merged with primary after recovery
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb_backup
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb-backup-data:/var/lib/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=adminpassword123
+      - DOCKER_INFLUXDB_INIT_ORG=AQI_Backup
+      - DOCKER_INFLUXDB_INIT_BUCKET=air_quality_backup
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=backup-token-change-this-in-production
+    networks:
+      - aqm_backup
+
+  # 3. BACKUP Data Processor
+  # Subscribes to backup MQTT broker and writes to backup database
+  telegraf:
+    image: telegraf:latest
+    container_name: telegraf_backup
+    restart: unless-stopped
+    depends_on:
+      - influxdb
+      - mosquitto
+    volumes:
+      - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+    networks:
+      - aqm_backup
+
+  # 4. Optional: Grafana for viewing backup data
+  # Commented out by default to save resources
+  # Uncomment if you want to view backup data independently
+  # grafana:
+  #   image: grafana/grafana-oss:latest
+  #   container_name: grafana_backup
+  #   restart: unless-stopped
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - influxdb
+  #   volumes:
+  #     - grafana-backup-storage:/var/lib/grafana
+  #   networks:
+  #     - aqm_backup
+
+networks:
+  aqm_backup:
+    driver: bridge
+
+volumes:
+  influxdb-backup-data:
+  # grafana-backup-storage:
