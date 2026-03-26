@@ -1,8 +1,9 @@
-# Air Quality Monitoring System
+# Air Quality Monitoring System (AQI_Project_Sprint)
 
-**Date:** March 7, 2026  
-**Project:** AQI_Project_Sprint  
-**Type:** Embedded IoT + Full-Stack Data Pipeline
+**Last Updated:** March 2026  
+**Type:** Embedded IoT + Full-Stack Data Pipeline  
+**Hardware:** ESP32 + ZPHS01B Multi-Gas Sensor  
+**Infrastructure:** Dual Raspberry Pi HA cluster + Optional Research Server
 
 ---
 
