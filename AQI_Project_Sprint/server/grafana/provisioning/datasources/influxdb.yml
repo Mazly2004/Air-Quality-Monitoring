@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    jsonData:
+      version: Flux
+      organization: Secondspark
+      defaultBucket: mazly
+      tlsSkipVerify: true
+    secureJsonData:
+      token: "Ah89PHWEm5j8dIIjAH4cKyQwARelf2dQCa6hbSkJPMxic6Tida_j0adFxAVoA0J3Kdc7CIvFPOMHPTwgascf3Q=="
+    isDefault: true
+    editable: true

@@ -38,9 +38,9 @@ bool wifiConnected = false;
 // Format: LiquidCrystal_I2C(address, columns, rows)
 LiquidCrystal_I2C lcd(0x27, 20, 4); // Changed to 0x27 based on I2C scan
 
-// ZPHS01B Data packet structure (25 bytes)
-// Format: FF 86 [22 data bytes] [checksum]
-uint8_t dataBuffer[25];
+// ZPHS01B Data packet structure (26 bytes)
+// Format: FF 86 [22 data bytes] [2 checksum bytes]
+uint8_t dataBuffer[26];
 uint8_t bufferIndex = 0;
 
 // Command to request data from ZPHS01B (Question and Answer mode)
@@ -170,8 +170,9 @@ void reconnect() {
         continue; // Try secondary immediately
       }
 
-      // Exponential backoff: 2s, 4s, 8s
-      int backoffDelay = min(2000 * (1 << connectionAttempts), 8000);
+      // Exponential backoff: 2s, 4s, 8s (cap at 3 to avoid overflow)
+      int cappedAttempts = min(connectionAttempts, 3);
+      int backoffDelay = min(2000 * (1 << cappedAttempts), 8000);
       Serial.printf("[HA] Retrying in %dms...\n", backoffDelay);
       delay(backoffDelay);
     }
@@ -180,7 +181,7 @@ void reconnect() {
 
 // Send measurement data to MQTT broker
 void sendDataMQTT(float pm25, float pm10, float co2, float tvoc, float temp,
-                  float humidity, float hcho) {
+                  float humidity, float hcho, float co, float o3, float no2) {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) {
     Serial.println("[MQTT] Skipping - WiFi not connected");
     return;
@@ -191,11 +192,11 @@ void sendDataMQTT(float pm25, float pm10, float co2, float tvoc, float temp,
   }
 
   // Create JSON payload with proper decimal precision for Telegraf
-  char buffer[256];
+  char buffer[512];
   snprintf(buffer, sizeof(buffer),
            "{\"pm25\":%.2f,\"pm10\":%.2f,\"co2\":%.2f,\"tvoc\":%.2f,\"temp\":%."
-           "2f,\"hum\":%.2f,\"hcho\":%.4f}",
-           pm25, pm10, co2, tvoc, temp, humidity, hcho);
+           "2f,\"hum\":%.2f,\"hcho\":%.4f,\"co\":%.2f,\"o3\":%.3f,\"no2\":%.3f}",
+           pm25, pm10, co2, tvoc, temp, humidity, hcho, co, o3, no2);
 
   Serial.print("[MQTT] Publishing: ");
   Serial.println(buffer);
@@ -286,32 +287,31 @@ void parseZPHS01B() {
   }
   checksum = (~checksum) + 1;
 
-  // Debugging: If Recv is 00, we are definitely reading the wrong index
-  if (checksum != dataBuffer[24]) {
+  if (checksum != dataBuffer[25]) {
     Serial.printf("[WARNING] Checksum mismatch. Calc: %02X, Recv: %02X\n",
-                  checksum, dataBuffer[24]);
+                  checksum, dataBuffer[25]);
+    return;
   }
 
-  // --- DATA EXTRACTION (Shifted/Corrected Mapping) ---
-  // If your numbers are still crazy, we swap the order (High << 8 | Low)
+  // --- DATA EXTRACTION ---
   uint16_t pm1_0 = (uint16_t)dataBuffer[2] << 8 | dataBuffer[3];
   uint16_t pm2_5 = (uint16_t)dataBuffer[4] << 8 | dataBuffer[5];
-  uint16_t pm10 = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7];
-  uint16_t co2 = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9];
-  uint16_t tvoc = (uint16_t)dataBuffer[10] << 8 | dataBuffer[11];
+  uint16_t pm10  = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7];
+  uint16_t co2   = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9];
+  uint8_t  tvoc  = dataBuffer[10]; // TVOC is a single byte
 
-  // Temperature math: (High << 8 | Low - 400) / 10
-  int16_t rawTemp = (int16_t)dataBuffer[12] << 8 | dataBuffer[13];
-  float finalTemp = (rawTemp - 400) / 10.0;
+  // Temperature: bytes 11-12, big-endian, formula: (raw - 435) * 0.1
+  uint16_t rawTempU = (uint16_t)dataBuffer[11] << 8 | dataBuffer[12];
+  float finalTemp = (rawTempU - 435) * 0.1f;
 
-  // Humidity math: (High << 8 | Low) / 10
-  uint16_t rawHumi = (uint16_t)dataBuffer[14] << 8 | dataBuffer[15];
-  float finalHumi = rawHumi / 10.0;
+  // Humidity: bytes 13-14, big-endian, formula: raw * 0.1 = RH%
+  uint16_t rawHumi = (uint16_t)dataBuffer[13] << 8 | dataBuffer[14];
+  float finalHumi = rawHumi * 0.1f;
 
-  uint16_t ch2o = (uint16_t)dataBuffer[16] << 8 | dataBuffer[17];
-  uint16_t co = (uint16_t)dataBuffer[18] << 8 | dataBuffer[19];
-  uint16_t o3 = (uint16_t)dataBuffer[20] << 8 | dataBuffer[21];
-  uint16_t no2 = (uint16_t)dataBuffer[22] << 8 | dataBuffer[23];
+  uint16_t ch2o = (uint16_t)dataBuffer[15] << 8 | dataBuffer[16];
+  uint16_t co   = (uint16_t)dataBuffer[17] << 8 | dataBuffer[18];
+  uint16_t o3   = (uint16_t)dataBuffer[19] << 8 | dataBuffer[20];
+  uint16_t no2  = (uint16_t)dataBuffer[21] << 8 | dataBuffer[22];
 
   // --- SERIAL OUTPUT (Your Requested Format) ---
   Serial.println("\n========== ZPHS01B Sensor Data ==========");
@@ -322,10 +322,10 @@ void parseZPHS01B() {
   Serial.printf("TVOC:          %d ppb\n", tvoc);
   Serial.printf("Temperature:   %.1f C\n", finalTemp);
   Serial.printf("Humidity:      %.1f %%\n", finalHumi);
-  Serial.printf("HCHO (CH2O):   %d ug/m3\n", ch2o);
-  Serial.printf("CO:            %d ppm\n", co);
-  Serial.printf("O3:            %d ppb\n", o3);
-  Serial.printf("NO2:           %d ppb\n", no2);
+  Serial.printf("HCHO (CH2O):   %.3f mg/m3\n", ch2o * 0.001f);
+  Serial.printf("CO:            %.1f ppm\n", co * 0.1f);
+  Serial.printf("O3:            %.2f ppm\n", o3 * 0.01f);
+  Serial.printf("NO2:           %.2f ppm\n", no2 * 0.01f);
   Serial.println("=========================================\n");
 
   // --- SENSOR VALIDATION ---
@@ -340,8 +340,23 @@ void parseZPHS01B() {
     return;
   }
 
+  // --- LCD UPDATE ---
+  lcd.clear();
+  char line[21];
+  snprintf(line, sizeof(line), "PM2.5:%d PM10:%d", pm2_5, pm10);
+  lcd.setCursor(0, 0);
+  lcd.print(line);
+  snprintf(line, sizeof(line), "CO2:%d TVOC:%d", co2, tvoc);
+  lcd.setCursor(0, 1);
+  lcd.print(line);
+  snprintf(line, sizeof(line), "Temp:%.1fC Hum:%.1f%%", finalTemp, finalHumi);
+  lcd.setCursor(0, 2);
+  lcd.print(line);
+  lcd.setCursor(0, 3);
+  lcd.print(usingPrimaryBroker ? "MQTT: Primary       " : "MQTT: Backup        ");
+
   // --- MQTT PUBLISHING ---
-  sendDataMQTT(pm2_5, pm10, co2, tvoc, finalTemp, finalHumi, ch2o / 1000.0);
+  sendDataMQTT(pm2_5, pm10, co2, tvoc, finalTemp, finalHumi, ch2o * 0.001f, co * 0.1f, o3 * 0.01f, no2 * 0.01f);
 }
 
 void loop() {
@@ -351,54 +366,33 @@ void loop() {
   }
   client.loop();
 
-  // 2. Send mock data every 10 seconds (while sensor hardware is being fixed)
-  static unsigned long lastSend = 0;
-  if (millis() - lastSend > 10000) {
-    Serial.println("\n[INFO] Sending mock sensor data for pipeline testing...");
-
-    // Generate realistic mock data
-    float mockPM25 = 12.5 + (random(-50, 50) / 10.0);  // 7.5-17.5
-    float mockPM10 = 18.0 + (random(-50, 50) / 10.0);  // 13.0-23.0
-    float mockCO2 = 450.0 + random(-50, 50);           // 400-500
-    float mockTVOC = 100.0 + random(-30, 30);          // 70-130
-    float mockTemp = 22.0 + (random(-20, 20) / 10.0);  // 20.0-24.0
-    float mockHum = 45.0 + (random(-50, 50) / 10.0);   // 40.0-50.0
-    float mockHCHO = 0.015 + (random(-5, 5) / 1000.0); // 0.010-0.020
-
-    // Display mock data
-    Serial.println("========== MOCK SENSOR DATA ==========");
-    Serial.printf("PM2.5:         %.1f ug/m3\n", mockPM25);
-    Serial.printf("PM10:          %.1f ug/m3\n", mockPM10);
-    Serial.printf("CO2:           %.0f ppm\n", mockCO2);
-    Serial.printf("TVOC:          %.0f ppb\n", mockTVOC);
-    Serial.printf("Temperature:   %.1f C\n", mockTemp);
-    Serial.printf("Humidity:      %.1f %%\n", mockHum);
-    Serial.printf("HCHO:          %.3f mg/m3\n", mockHCHO);
-    Serial.println("======================================\n");
-
-    // Send to MQTT
-    sendDataMQTT(mockPM25, mockPM10, mockCO2, mockTVOC, mockTemp, mockHum,
-                 mockHCHO);
-
-    lastSend = millis();
-  }
-
-  // 3. Real sensor code (currently not working due to hardware issues)
-  // Uncomment this section once hardware is fixed:
-  /*
+  // 2. Request sensor data every 5 seconds
   static unsigned long lastRequest = 0;
   if (millis() - lastRequest > 5000) {
     requestSensorData();
+    Serial.println("[SENSOR] Request sent, waiting for response...");
     lastRequest = millis();
   }
 
-  if (Serial2.available() >= 25) {
-    if (Serial2.peek() != 0xFF) {
-      Serial2.read();
-      return;
+  // 3. Read sensor response (25-byte packet)
+  while (Serial2.available()) {
+    uint8_t b = Serial2.read();
+
+    // Hunt for packet header 0xFF
+    if (bufferIndex == 0 && b != 0xFF) {
+      continue;
     }
-    Serial2.readBytes(dataBuffer, 25);
-    parseZPHS01B();
+    // Second byte must be 0x86
+    if (bufferIndex == 1 && b != 0x86) {
+      bufferIndex = 0;
+      continue;
+    }
+
+    dataBuffer[bufferIndex++] = b;
+
+    if (bufferIndex == 26) {
+      bufferIndex = 0;
+      parseZPHS01B();
+    }
   }
-  */
 }
