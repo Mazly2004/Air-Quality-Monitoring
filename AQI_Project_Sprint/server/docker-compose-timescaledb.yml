@@ -12,7 +12,11 @@ services:
     container_name: timescaledb_research
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      # Host port 5435 to avoid:
+      #   - 5432: Homebrew postgresql@16 on the Mac
+      #   - 5433/5434: other Docker stacks in this repo
+      # Inside the docker network the container still listens on 5432.
+      - "5435:5432"
     environment:
       - POSTGRES_DB=airquality_research
       - POSTGRES_USER=aqm_user
