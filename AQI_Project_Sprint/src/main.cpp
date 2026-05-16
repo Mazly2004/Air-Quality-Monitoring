@@ -1,398 +1,268 @@
-#include <Arduino.h>
-#include <LiquidCrystal_I2C.h>
-#include <PubSubClient.h>
 #include <WiFi.h>
-#include <Wire.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <ThreeWire.h>  
+#include <RtcDS1302.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_PCD8544.h>
 
-#define RXD2 16
-#define TXD2 17
-
-// WiFi Configuration - UPDATE THESE!
-const char *WIFI_SSID = "Mazly";
-const char *WIFI_PASSWORD = "oliver12345";
-
-// MQTT Configuration - High Availability Setup
-// Primary MQTT Broker (Raspberry Pi 1)
-const char *MQTT_PRIMARY_SERVER = "172.20.10.10";
-const int MQTT_PRIMARY_PORT = 1883;
-
-// Secondary MQTT Broker (Raspberry Pi 2) - Backup
-const char *MQTT_SECONDARY_SERVER = "172.20.10.11";
-const int MQTT_SECONDARY_PORT = 1883;
-
-const char *MQTT_TOPIC = "sensors/esp32_01";
-
-// Failover state tracking
-bool usingPrimaryBroker = true;
-unsigned long lastPrimaryRetry = 0;
-const unsigned long PRIMARY_RETRY_INTERVAL = 60000; // Try primary every 60s
-int connectionAttempts = 0;
-const int MAX_RETRY_ATTEMPTS = 3;
+// --- Network & MQTT Credentials ---
+const char* ssid = "TDANGARE 9321";
+const char* password = "26754|Wy";
+const char* mqtt_server = "192.168.137.26";
+const int mqtt_port = 1883;
+const char* mqtt_topic = "telemetry/airquality";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-bool wifiConnected = false;
 
-// LCD Display settings (I2C)
-// Common I2C addresses: 0x27 or 0x3F
-// Format: LiquidCrystal_I2C(address, columns, rows)
-LiquidCrystal_I2C lcd(0x27, 20, 4); // Changed to 0x27 based on I2C scan
+// --- ZPHS01B Sensor Pins ---
+#define RX_PIN 16
+#define TX_PIN 17
 
-// ZPHS01B Data packet structure (26 bytes)
-// Format: FF 86 [22 data bytes] [2 checksum bytes]
+// --- DS1302 RTC Pins ---
+#define RTC_DAT_PIN 27
+#define RTC_CLK_PIN 26
+#define RTC_RST_PIN 14
+
+// --- Nokia 5110 LCD Pins ---
+#define LCD_SCLK 18
+#define LCD_DIN  23
+#define LCD_DC   4
+#define LCD_CS   5
+#define LCD_RST  2
+
+ThreeWire myWire(RTC_DAT_PIN, RTC_CLK_PIN, RTC_RST_PIN); 
+RtcDS1302<ThreeWire> Rtc(myWire);
+Adafruit_PCD8544 display = Adafruit_PCD8544(LCD_SCLK, LCD_DIN, LCD_DC, LCD_CS, LCD_RST);
+
+const byte requestCmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
 uint8_t dataBuffer[26];
-uint8_t bufferIndex = 0;
+int bufferIndex = 0;
+unsigned long lastRequest = 0;
+const unsigned long requestInterval = 60000;
 
-// Command to request data from ZPHS01B (Question and Answer mode)
-void requestSensorData() {
-  // Send request command: FF 01 86 00 00 00 00 00 79
-  uint8_t cmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
-  Serial2.write(cmd, 9);
+// Parsed sensor values
+uint16_t pm1_0, pm2_5, pm10, co2;
+uint8_t voc;
+float temp, hum, ch2o, co, o3, no2;
+
+// --- EDGE AI & ANOMALY DETECTION VARIABLES ---
+// 1. Regulatory Limit (Heaviside threshold) for PM2.5
+const float LIMIT_PM25 = 15.0;   // WHO guideline e.g., 15 µg/m³
+
+// 2. MAD Algorithm Window for PM2.5
+const int WINDOW_SIZE = 10;
+float pm25_history[WINDOW_SIZE];
+int history_idx = 0;
+int readings_count = 0;
+const float MAD_THRESHOLD_MULTIPLIER = 3.0; // 'k' value
+
+// --- HELPER FUNCTIONS FOR MATH ---
+
+// Heaviside Step Function
+int heaviside(float value, float limit) {
+  return (value >= limit) ? 1 : 0;
 }
 
-void reconnect();
+// Utility to find the median of an array without altering the original
+float getMedian(float data[], int size) {
+  float temp[size];
+  memcpy(temp, data, size * sizeof(float));
+  
+  // Simple bubble sort for small arrays
+  for(int i=0; i<size-1; i++) {
+    for(int j=i+1; j<size; j++) {
+      if(temp[i] > temp[j]) {
+        float t = temp[i];
+        temp[i] = temp[j];
+        temp[j] = t;
+      }
+    }
+  }
+  if(size % 2 == 0) return (temp[size/2 - 1] + temp[size/2]) / 2.0;
+  return temp[size/2];
+}
 
-// Connect to WiFi
-void connectWiFi() {
-  Serial.println("\n=== Connecting to WiFi ===");
-  Serial.printf("SSID: %s\n", WIFI_SSID);
+// Compute MAD anomaly flag
+int calculateMadAnomaly(float newValue) {
+  if (readings_count < WINDOW_SIZE) return 0; // Not enough data yet
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  float median = getMedian(pm25_history, WINDOW_SIZE);
+  
+  float deviations[WINDOW_SIZE];
+  for(int i=0; i<WINDOW_SIZE; i++) {
+    deviations[i] = abs(pm25_history[i] - median);
+  }
+  
+  float mad = getMedian(deviations, WINDOW_SIZE);
+  if (mad == 0) mad = 1.0; // Prevent overly sensitive zero-floor division
+  
+  float current_deviation = abs(newValue - median);
+  
+  // Return 1 if current deviation is greater than k * MAD
+  return (current_deviation > (MAD_THRESHOLD_MULTIPLIER * mad)) ? 1 : 0;
+}
 
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("WiFi Connecting...");
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+// --- STANDARD SETUP & CONNECTIVITY ---
+
+void setup_wifi() {
+  delay(10);
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
-    attempts++;
   }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    wifiConnected = true;
-    Serial.println("\n✓ WiFi Connected!");
-    Serial.print("IP Address: ");
-    Serial.println(WiFi.localIP());
-    Serial.printf("MQTT Primary: %s:%d, Backup: %s:%d\n", MQTT_PRIMARY_SERVER,
-                  MQTT_PRIMARY_PORT, MQTT_SECONDARY_SERVER,
-                  MQTT_SECONDARY_PORT);
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("WiFi Connected!");
-    lcd.setCursor(0, 1);
-    lcd.print(WiFi.localIP());
-    delay(2000);
-  } else {
-    wifiConnected = false;
-    Serial.println("\n✗ WiFi Connection Failed");
-    Serial.println("Continuing without WiFi...");
-
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("WiFi Failed!");
-    lcd.setCursor(0, 1);
-    lcd.print("Local Mode Only");
-    delay(2000);
-  }
+  Serial.println("\nWiFi Connected!");
 }
 
-// Reconnect to MQTT broker with automatic failover
-void reconnect() {
+void reconnect_mqtt() {
   while (!client.connected()) {
-    // Periodically try to return to primary broker if using secondary
-    if (!usingPrimaryBroker &&
-        (millis() - lastPrimaryRetry > PRIMARY_RETRY_INTERVAL)) {
-      Serial.println("[HA] Attempting to reconnect to primary broker...");
-      client.setServer(MQTT_PRIMARY_SERVER, MQTT_PRIMARY_PORT);
-
-      if (client.connect("ESP32_AQI_Station")) {
-        usingPrimaryBroker = true;
-        connectionAttempts = 0;
-        Serial.println("[HA] ✓ Reconnected to PRIMARY broker!");
-
-        lcd.setCursor(0, 3);
-        lcd.print("MQTT: Primary       ");
-        return;
-      }
-      lastPrimaryRetry = millis();
-      Serial.println("[HA] Primary still unavailable, staying on backup");
-    }
-
-    // Determine which broker to try
-    const char *currentServer =
-        usingPrimaryBroker ? MQTT_PRIMARY_SERVER : MQTT_SECONDARY_SERVER;
-    int currentPort =
-        usingPrimaryBroker ? MQTT_PRIMARY_PORT : MQTT_SECONDARY_PORT;
-    const char *brokerName = usingPrimaryBroker ? "PRIMARY" : "BACKUP";
-
-    Serial.printf("[HA] Attempting MQTT connection to %s (%s:%d)...\n",
-                  brokerName, currentServer, currentPort);
-
-    // Set the current broker
-    client.setServer(currentServer, currentPort);
-
-    // Attempt connection
-    if (client.connect("ESP32_AQI_Station")) {
-      connectionAttempts = 0;
-      Serial.printf("[HA] ✓ Connected to %s broker!\n", brokerName);
-
-      lcd.setCursor(0, 3);
-      if (usingPrimaryBroker) {
-        lcd.print("MQTT: Primary       ");
-      } else {
-        lcd.print("MQTT: Backup        ");
-      }
-      return;
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect("ESP32_AirQualityNode")) {
+      Serial.println("connected");
     } else {
-      connectionAttempts++;
-      Serial.printf("[HA] ✗ Failed to connect to %s (rc=%d), attempt %d/%d\n",
-                    brokerName, client.state(), connectionAttempts,
-                    MAX_RETRY_ATTEMPTS);
-
-      lcd.setCursor(0, 3);
-      lcd.print("MQTT: Connecting... ");
-
-      // If primary fails after max attempts, switch to secondary
-      if (usingPrimaryBroker && connectionAttempts >= MAX_RETRY_ATTEMPTS) {
-        Serial.println(
-            "[HA] ⚠ Primary broker unreachable, failing over to BACKUP");
-        usingPrimaryBroker = false;
-        connectionAttempts = 0;
-        lastPrimaryRetry = millis();
-
-        lcd.setCursor(0, 3);
-        lcd.print("MQTT: Failover...   ");
-        delay(1000);
-        continue; // Try secondary immediately
-      }
-
-      // Exponential backoff: 2s, 4s, 8s (cap at 3 to avoid overflow)
-      int cappedAttempts = min(connectionAttempts, 3);
-      int backoffDelay = min(2000 * (1 << cappedAttempts), 8000);
-      Serial.printf("[HA] Retrying in %dms...\n", backoffDelay);
-      delay(backoffDelay);
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
     }
-  }
-}
-
-// Send measurement data to MQTT broker
-void sendDataMQTT(float pm25, float pm10, float co2, float tvoc, float temp,
-                  float humidity, float hcho, float co, float o3, float no2) {
-  if (!wifiConnected || WiFi.status() != WL_CONNECTED) {
-    Serial.println("[MQTT] Skipping - WiFi not connected");
-    return;
-  }
-
-  if (!client.connected()) {
-    reconnect();
-  }
-
-  // Create JSON payload with proper decimal precision for Telegraf
-  char buffer[512];
-  snprintf(buffer, sizeof(buffer),
-           "{\"pm25\":%.2f,\"pm10\":%.2f,\"co2\":%.2f,\"tvoc\":%.2f,\"temp\":%."
-           "2f,\"hum\":%.2f,\"hcho\":%.4f,\"co\":%.2f,\"o3\":%.3f,\"no2\":%.3f}",
-           pm25, pm10, co2, tvoc, temp, humidity, hcho, co, o3, no2);
-
-  Serial.print("[MQTT] Publishing: ");
-  Serial.println(buffer);
-
-  // Publish to the topic
-  if (client.publish(MQTT_TOPIC, buffer)) {
-    Serial.println("[MQTT] ✓ Success");
-  } else {
-    Serial.println("[MQTT] ✗ Failed");
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
-  Serial.println("\n\n=== ESP32 Air Quality Monitor (ZPHS01B) ===");
-
-  // Initialize I2C and scan for devices
-  Wire.begin();
-
-  Serial.println("\nScanning I2C bus...");
-  byte count = 0;
-  byte foundAddress = 0;
-  for (byte i = 1; i < 127; i++) {
-    Wire.beginTransmission(i);
-    if (Wire.endTransmission() == 0) {
-      Serial.printf("I2C device found at address 0x%02X\n", i);
-      foundAddress = i;
-      count++;
-    }
-  }
-  if (count == 0) {
-    Serial.println("No I2C devices found! Check wiring!");
-  } else {
-    Serial.printf("Found %d I2C device(s)\n", count);
-    if (foundAddress != 0x3F && foundAddress != 0x27) {
-      Serial.printf(
-          "WARNING: Found address 0x%02X - update code if LCD doesn't work!\n",
-          foundAddress);
-    }
-  }
-  Serial.println();
-
-  // Initialize LCD Display (I2C)
-  lcd.init();
-  lcd.backlight();
-
-  Serial.println("LCD initialized at address 0x27");
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("ZPHS01B Monitor");
-  lcd.setCursor(0, 1);
-  lcd.print("Initializing...");
-  delay(2000);
-  lcd.clear();
-
-  // Initialize Serial2 for sensor
-  Serial.println("Initializing Serial2 for ZPHS01B sensor...");
-  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2);
-  Serial.println("Serial2 initialized.");
-  Serial.println("===========================================\n");
-
-  // Connect to WiFi
-  connectWiFi();
-
-  // Initialize MQTT client (start with primary broker)
-  if (wifiConnected) {
-    Serial.println("[HA] Initializing MQTT with PRIMARY broker");
-    client.setServer(MQTT_PRIMARY_SERVER, MQTT_PRIMARY_PORT);
-    usingPrimaryBroker = true;
-    reconnect();
-  }
-
-  delay(1000);
+  Serial2.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+  
+  display.begin();
+  display.setContrast(60); 
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(BLACK);
+  
+  setup_wifi();
+  client.setServer(mqtt_server, mqtt_port);
+  
+  Rtc.Begin();
+  if (!Rtc.GetIsRunning()) Rtc.SetIsRunning(true);
+  
+  requestSensorData();
 }
 
-void parseZPHS01B() {
-  // ZPHS01B response packet: FF 86 [22 data bytes] [checksum] (25 bytes total)
-  // Let's ensure we are actually looking at a valid header
-  if (dataBuffer[0] != 0xFF || dataBuffer[1] != 0x86) {
-    return;
-  }
+void requestSensorData() {
+  Serial2.write(requestCmd, 9);
+}
 
-  // Calculate checksum (sum of bytes 1-23, then negate + 1)
+bool parseZPHS01B() {
+  if (dataBuffer[0] != 0xFF || dataBuffer[1] != 0x86) return false;
+
   uint8_t checksum = 0;
-  for (int i = 1; i < 24; i++) {
-    checksum += dataBuffer[i];
-  }
+  for (int i = 1; i <= 24; i++) checksum += dataBuffer[i];
   checksum = (~checksum) + 1;
 
-  if (checksum != dataBuffer[25]) {
-    Serial.printf("[WARNING] Checksum mismatch. Calc: %02X, Recv: %02X\n",
-                  checksum, dataBuffer[25]);
-    return;
-  }
+  if (checksum != dataBuffer[25]) return false;
 
-  // --- DATA EXTRACTION ---
-  uint16_t pm1_0 = (uint16_t)dataBuffer[2] << 8 | dataBuffer[3];
-  uint16_t pm2_5 = (uint16_t)dataBuffer[4] << 8 | dataBuffer[5];
-  uint16_t pm10  = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7];
-  uint16_t co2   = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9];
-  uint8_t  tvoc  = dataBuffer[10]; // TVOC is a single byte
-
-  // Temperature: bytes 11-12, big-endian, formula: (raw - 435) * 0.1
+  pm1_0 = (uint16_t)dataBuffer[2] << 8 | dataBuffer[3];   
+  pm2_5 = (uint16_t)dataBuffer[4] << 8 | dataBuffer[5];   
+  pm10  = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7];   
+  co2   = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9];   
+  voc   = dataBuffer[10];                                 
+  
   uint16_t rawTempU = (uint16_t)dataBuffer[11] << 8 | dataBuffer[12];
-  float finalTemp = (rawTempU - 435) * 0.1f;
+  temp = (rawTempU - 500.0f) * 0.1f;
+  hum = (float)((uint16_t)dataBuffer[13] << 8 | dataBuffer[14]);
 
-  // Humidity: bytes 13-14, big-endian, formula: raw * 0.1 = RH%
-  uint16_t rawHumi = (uint16_t)dataBuffer[13] << 8 | dataBuffer[14];
-  float finalHumi = rawHumi * 0.1f;
+  ch2o = ((uint16_t)dataBuffer[15] << 8 | dataBuffer[16]) * 0.001f;  
+  co   = ((uint16_t)dataBuffer[17] << 8 | dataBuffer[18]) * 0.1f;    
+  o3   = ((uint16_t)dataBuffer[19] << 8 | dataBuffer[20]) * 0.01f;   
+  no2  = ((uint16_t)dataBuffer[21] << 8 | dataBuffer[22]) * 0.01f;   
 
-  uint16_t ch2o = (uint16_t)dataBuffer[15] << 8 | dataBuffer[16];
-  uint16_t co   = (uint16_t)dataBuffer[17] << 8 | dataBuffer[18];
-  uint16_t o3   = (uint16_t)dataBuffer[19] << 8 | dataBuffer[20];
-  uint16_t no2  = (uint16_t)dataBuffer[21] << 8 | dataBuffer[22];
-
-  // --- SERIAL OUTPUT (Your Requested Format) ---
-  Serial.println("\n========== ZPHS01B Sensor Data ==========");
-  Serial.printf("PM1.0:         %d ug/m3\n", pm1_0);
-  Serial.printf("PM2.5:         %d ug/m3\n", pm2_5);
-  Serial.printf("PM10:          %d ug/m3\n", pm10);
-  Serial.printf("CO2:           %d ppm\n", co2);
-  Serial.printf("TVOC:          %d ppb\n", tvoc);
-  Serial.printf("Temperature:   %.1f C\n", finalTemp);
-  Serial.printf("Humidity:      %.1f %%\n", finalHumi);
-  Serial.printf("HCHO (CH2O):   %.3f mg/m3\n", ch2o * 0.001f);
-  Serial.printf("CO:            %.1f ppm\n", co * 0.1f);
-  Serial.printf("O3:            %.2f ppm\n", o3 * 0.01f);
-  Serial.printf("NO2:           %.2f ppm\n", no2 * 0.01f);
-  Serial.println("=========================================\n");
-
-  // --- SENSOR VALIDATION ---
-  // Skip MQTT publish if sensor readings are invalid
-  if (isnan(finalTemp) || finalTemp < -40 || finalTemp > 85) {
-    Serial.println(
-        "[ERROR] Invalid temperature reading, skipping MQTT publish.");
-    return;
-  }
-  if (isnan(finalHumi) || finalHumi < 0 || finalHumi > 100) {
-    Serial.println("[ERROR] Invalid humidity reading, skipping MQTT publish.");
-    return;
-  }
-
-  // --- LCD UPDATE ---
-  lcd.clear();
-  char line[21];
-  snprintf(line, sizeof(line), "PM2.5:%d PM10:%d", pm2_5, pm10);
-  lcd.setCursor(0, 0);
-  lcd.print(line);
-  snprintf(line, sizeof(line), "CO2:%d TVOC:%d", co2, tvoc);
-  lcd.setCursor(0, 1);
-  lcd.print(line);
-  snprintf(line, sizeof(line), "Temp:%.1fC Hum:%.1f%%", finalTemp, finalHumi);
-  lcd.setCursor(0, 2);
-  lcd.print(line);
-  lcd.setCursor(0, 3);
-  lcd.print(usingPrimaryBroker ? "MQTT: Primary       " : "MQTT: Backup        ");
-
-  // --- MQTT PUBLISHING ---
-  sendDataMQTT(pm2_5, pm10, co2, tvoc, finalTemp, finalHumi, ch2o * 0.001f, co * 0.1f, o3 * 0.01f, no2 * 0.01f);
+  return true;
 }
 
 void loop() {
-  // 1. Maintain MQTT Connection
-  if (!client.connected()) {
-    reconnect();
-  }
+  if (!client.connected()) reconnect_mqtt();
   client.loop();
 
-  // 2. Request sensor data every 5 seconds
-  static unsigned long lastRequest = 0;
-  if (millis() - lastRequest > 5000) {
+  if (millis() - lastRequest > requestInterval) {
     requestSensorData();
-    Serial.println("[SENSOR] Request sent, waiting for response...");
     lastRequest = millis();
   }
 
-  // 3. Read sensor response (25-byte packet)
   while (Serial2.available()) {
     uint8_t b = Serial2.read();
 
-    // Hunt for packet header 0xFF
-    if (bufferIndex == 0 && b != 0xFF) {
-      continue;
-    }
-    // Second byte must be 0x86
-    if (bufferIndex == 1 && b != 0x86) {
-      bufferIndex = 0;
-      continue;
-    }
+    if (bufferIndex == 0 && b != 0xFF) continue;
+    if (bufferIndex == 1 && b != 0x86) { bufferIndex = 0; continue; }
 
     dataBuffer[bufferIndex++] = b;
 
     if (bufferIndex == 26) {
       bufferIndex = 0;
-      parseZPHS01B();
+      
+      if (parseZPHS01B()) {
+        
+        // 1. Run Algorithms ONLY for PM2.5
+        int mad_flag_pm25 = calculateMadAnomaly(pm2_5);
+        int h_flag_pm25 = heaviside(pm2_5, LIMIT_PM25);
+
+        // Update rolling window for next calculation
+        pm25_history[history_idx] = pm2_5;
+        history_idx = (history_idx + 1) % WINDOW_SIZE;
+        if (readings_count < WINDOW_SIZE) readings_count++;
+
+        // 2. Build JSON Payload
+        StaticJsonDocument<512> doc;
+        
+        // All raw data
+        JsonObject sensors = doc.createNestedObject("readings");
+        sensors["pm1_0"] = pm1_0;
+        sensors["pm2_5"] = pm2_5;
+        sensors["pm10"]  = pm10;
+        sensors["co2"]   = co2;
+        sensors["voc_grade"] = voc;
+        sensors["temp"]  = temp;
+        sensors["humidity"] = hum;
+        sensors["ch2o"]  = ch2o;
+        sensors["co"]    = co;
+        sensors["o3"]    = o3;
+        sensors["no2"]   = no2;
+
+        // Anomaly flags for PM2.5 only
+        JsonObject flags = doc.createNestedObject("anomalies");
+        flags["heaviside_pm25"] = h_flag_pm25;
+        flags["mad_spike_pm25"] = mad_flag_pm25;
+
+        // 3. Serialize and Publish
+        char jsonBuffer[512];
+        serializeJson(doc, jsonBuffer);
+        client.publish(mqtt_topic, jsonBuffer);
+        
+        Serial.println("Published to MQTT:");
+        Serial.println(jsonBuffer);
+
+        // 4. Update LCD Display
+        display.clearDisplay();
+        display.setCursor(0, 0);
+        
+        RtcDateTime now = Rtc.GetDateTime();
+        char lcdTime[15];
+        snprintf(lcdTime, sizeof(lcdTime), "%02d:%02d:%02d", now.Hour(), now.Minute(), now.Second());
+        display.println(lcdTime);
+        
+        display.print("T:"); display.print(temp, 1); display.print("C "); 
+        display.print("RH:"); display.print(hum, 0); display.println("%");
+        display.print("PM2.5: "); display.print(pm2_5); display.println("ug");
+        
+        // Show anomaly warnings on screen for PM2.5
+        if(mad_flag_pm25) display.println("! SPIKE DETECTED");
+        else if (h_flag_pm25) display.println("! LIMIT EXCEEDED");
+        else display.println("Air Quality OK");
+        
+        display.display();
+      }
     }
   }
 }
