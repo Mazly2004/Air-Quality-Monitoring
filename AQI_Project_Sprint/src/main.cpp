@@ -43,6 +43,12 @@ int bufferIndex = 0;
 unsigned long lastRequest = 0;
 const unsigned long requestInterval = 60000;
 
+// Forward declarations
+void requestSensorData();
+void setup_wifi();
+void reconnect_mqtt();
+bool parseZPHS01B();
+
 // Parsed sensor values
 uint16_t pm1_0, pm2_5, pm10, co2;
 uint8_t voc;
