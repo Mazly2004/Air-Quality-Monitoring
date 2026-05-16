@@ -8,9 +8,9 @@
 #include <Adafruit_PCD8544.h>
 
 // --- Network & MQTT Credentials ---
-const char* ssid = "TDANGARE 9321";
-const char* password = "26754|Wy";
-const char* mqtt_server = "192.168.137.1";
+const char* ssid = "INNOV_HUB";
+const char* password = "wkProg219!";
+const char* mqtt_server = "10.144.4.20";
 const int mqtt_port = 1883;
 const char* mqtt_topic = "telemetry/airquality";
 
