@@ -219,27 +219,27 @@ void loop() {
         history_idx = (history_idx + 1) % WINDOW_SIZE;
         if (readings_count < WINDOW_SIZE) readings_count++;
 
-        // 2. Build JSON Payload
+        // 2. Build JSON Payload (flat schema to match Telegraf parser)
         StaticJsonDocument<512> doc;
-        
-        // All raw data
-        JsonObject sensors = doc.createNestedObject("readings");
-        sensors["pm1_0"] = pm1_0;
-        sensors["pm2_5"] = pm2_5;
-        sensors["pm10"]  = pm10;
-        sensors["co2"]   = co2;
-        sensors["voc_grade"] = voc;
-        sensors["temp"]  = temp;
-        sensors["humidity"] = hum;
-        sensors["ch2o"]  = ch2o;
-        sensors["co"]    = co;
-        sensors["o3"]    = o3;
-        sensors["no2"]   = no2;
+
+        // Telegraf-parsed fields (flat, top-level keys)
+        doc["pm25"] = pm2_5;
+        doc["pm10"] = pm10;
+        doc["co2"]  = co2;
+        doc["tvoc"] = voc;
+        doc["temp"] = temp;
+        doc["hum"]  = hum;
+        doc["hcho"] = ch2o;
+        doc["co"]   = co;
+        doc["o3"]   = o3;
+        doc["no2"]  = no2;
+
+        // Extras kept for completeness (ignored by Telegraf, available on broker)
+        doc["pm1_0"] = pm1_0;
 
         // Anomaly flags for PM2.5 only
-        JsonObject flags = doc.createNestedObject("anomalies");
-        flags["heaviside_pm25"] = h_flag_pm25;
-        flags["mad_spike_pm25"] = mad_flag_pm25;
+        doc["heaviside_pm25"] = h_flag_pm25;
+        doc["mad_spike_pm25"] = mad_flag_pm25;
 
         // 3. Serialize and Publish
         char jsonBuffer[512];
