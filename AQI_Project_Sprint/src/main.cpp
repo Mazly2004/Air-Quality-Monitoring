@@ -12,7 +12,7 @@ const char* ssid = "INNOV_HUB";
 const char* password = "wkProg219!";
 const char* mqtt_server = "10.144.4.20";
 const int mqtt_port = 1883;
-const char* mqtt_topic = "telemetry/airquality";
+const char* mqtt_topic = "sensors/esp32_02";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -121,7 +121,7 @@ void setup_wifi() {
 void reconnect_mqtt() {
   while (!client.connected()) {
     Serial.print("Attempting MQTT connection...");
-    if (client.connect("ESP32_AirQualityNode")) {
+    if (client.connect("ESP32_AirQualityNode_02")) {
       Serial.println("connected");
     } else {
       Serial.print("failed, rc=");
