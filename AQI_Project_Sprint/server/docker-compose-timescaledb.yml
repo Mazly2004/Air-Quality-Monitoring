@@ -52,8 +52,9 @@ services:
       - PGDATABASE=airquality_research
       - PGUSER=aqm_user
       - PGPASSWORD=change_this_password_in_production
-      # MQTT broker addresses (update these to match your Pis)
-      - MQTT_PRIMARY=tcp://172.20.10.10:1883
+      # MQTT broker addresses
+      # Primary = Raspberry Pi 1 (Mosquitto). Update if your Pi IPs change.
+      - MQTT_PRIMARY=tcp://10.144.4.20:1883
       - MQTT_BACKUP=tcp://172.20.10.11:1883
 
   # Optional: pgAdmin for database management

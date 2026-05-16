@@ -5,18 +5,29 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- Create main sensor data table
+-- One table for ALL devices. Use the `location` column ('indoor'/'outdoor')
+-- to separate views/queries/dashboards.
 CREATE TABLE IF NOT EXISTS sensor_data (
-    time            TIMESTAMPTZ NOT NULL,
-    device_id       TEXT NOT NULL,
-    pm25            DOUBLE PRECISION,
-    pm10            DOUBLE PRECISION,
-    co2             DOUBLE PRECISION,
-    tvoc            DOUBLE PRECISION,
-    temperature     DOUBLE PRECISION,
-    humidity        DOUBLE PRECISION,
-    hcho            DOUBLE PRECISION,
-    -- Additional metadata
-    mqtt_broker     TEXT,  -- Which broker sent this data (primary/backup)
+    time              TIMESTAMPTZ NOT NULL,
+    device_id         TEXT        NOT NULL,
+    location          TEXT        NOT NULL DEFAULT 'unknown', -- 'indoor' | 'outdoor' | 'unknown'
+    -- Core particulate / gas measurements
+    pm1               DOUBLE PRECISION,
+    pm25              DOUBLE PRECISION,
+    pm10              DOUBLE PRECISION,
+    co2               DOUBLE PRECISION,
+    tvoc              DOUBLE PRECISION,
+    temperature       DOUBLE PRECISION,
+    humidity          DOUBLE PRECISION,
+    hcho              DOUBLE PRECISION,
+    co                DOUBLE PRECISION,
+    o3                DOUBLE PRECISION,
+    no2               DOUBLE PRECISION,
+    -- Edge-AI anomaly flags from device
+    heaviside_pm25    SMALLINT,
+    mad_spike_pm25    SMALLINT,
+    -- Pipeline metadata
+    mqtt_broker       TEXT,  -- Which broker sent this data (primary/backup)
     PRIMARY KEY (time, device_id)
 );
 
@@ -24,28 +35,36 @@ CREATE TABLE IF NOT EXISTS sensor_data (
 SELECT create_hypertable('sensor_data', 'time', if_not_exists => TRUE);
 
 -- Create indexes for common queries
-CREATE INDEX IF NOT EXISTS idx_device_time ON sensor_data (device_id, time DESC);
-CREATE INDEX IF NOT EXISTS idx_pm25 ON sensor_data (pm25, time DESC);
-CREATE INDEX IF NOT EXISTS idx_broker ON sensor_data (mqtt_broker, time DESC);
+CREATE INDEX IF NOT EXISTS idx_device_time   ON sensor_data (device_id, time DESC);
+CREATE INDEX IF NOT EXISTS idx_location_time ON sensor_data (location,  time DESC);
+CREATE INDEX IF NOT EXISTS idx_pm25          ON sensor_data (pm25,      time DESC);
+CREATE INDEX IF NOT EXISTS idx_broker        ON sensor_data (mqtt_broker, time DESC);
 
 -- Create continuous aggregate for 1-hour averages
 CREATE MATERIALIZED VIEW IF NOT EXISTS sensor_data_hourly
 WITH (timescaledb.continuous) AS
-SELECT 
+SELECT
     time_bucket('1 hour', time) AS hour,
     device_id,
-    AVG(pm25) as avg_pm25,
-    AVG(pm10) as avg_pm10,
-    AVG(co2) as avg_co2,
-    AVG(tvoc) as avg_tvoc,
+    location,
+    AVG(pm1)         as avg_pm1,
+    AVG(pm25)        as avg_pm25,
+    AVG(pm10)        as avg_pm10,
+    AVG(co2)         as avg_co2,
+    AVG(tvoc)        as avg_tvoc,
     AVG(temperature) as avg_temperature,
-    AVG(humidity) as avg_humidity,
-    AVG(hcho) as avg_hcho,
-    MIN(pm25) as min_pm25,
-    MAX(pm25) as max_pm25,
+    AVG(humidity)    as avg_humidity,
+    AVG(hcho)        as avg_hcho,
+    AVG(co)          as avg_co,
+    AVG(o3)          as avg_o3,
+    AVG(no2)         as avg_no2,
+    MIN(pm25)        as min_pm25,
+    MAX(pm25)        as max_pm25,
+    SUM(heaviside_pm25)::INT as heaviside_alerts,
+    SUM(mad_spike_pm25)::INT as mad_alerts,
     COUNT(*) as sample_count
 FROM sensor_data
-GROUP BY hour, device_id;
+GROUP BY hour, device_id, location;
 
 -- Add refresh policy for continuous aggregate (refresh every hour)
 SELECT add_continuous_aggregate_policy('sensor_data_hourly',
@@ -71,10 +90,12 @@ CREATE TABLE IF NOT EXISTS db_performance_metrics (
 
 SELECT create_hypertable('db_performance_metrics', 'time', if_not_exists => TRUE);
 
--- Function to handle duplicate data (called by Telegraf)
+-- Function to handle duplicate data (called by Telegraf or manually)
 CREATE OR REPLACE FUNCTION insert_sensor_data(
     p_time TIMESTAMPTZ,
     p_device_id TEXT,
+    p_location TEXT,
+    p_pm1 DOUBLE PRECISION,
     p_pm25 DOUBLE PRECISION,
     p_pm10 DOUBLE PRECISION,
     p_co2 DOUBLE PRECISION,
@@ -82,19 +103,28 @@ CREATE OR REPLACE FUNCTION insert_sensor_data(
     p_temperature DOUBLE PRECISION,
     p_humidity DOUBLE PRECISION,
     p_hcho DOUBLE PRECISION,
+    p_co DOUBLE PRECISION,
+    p_o3 DOUBLE PRECISION,
+    p_no2 DOUBLE PRECISION,
+    p_heaviside_pm25 SMALLINT,
+    p_mad_spike_pm25 SMALLINT,
     p_mqtt_broker TEXT
 ) RETURNS VOID AS $$
 BEGIN
     INSERT INTO sensor_data (
-        time, device_id, pm25, pm10, co2, tvoc, 
-        temperature, humidity, hcho, mqtt_broker
+        time, device_id, location,
+        pm1, pm25, pm10, co2, tvoc,
+        temperature, humidity, hcho, co, o3, no2,
+        heaviside_pm25, mad_spike_pm25, mqtt_broker
     ) VALUES (
-        p_time, p_device_id, p_pm25, p_pm10, p_co2, p_tvoc,
-        p_temperature, p_humidity, p_hcho, p_mqtt_broker
+        p_time, p_device_id, COALESCE(p_location, 'unknown'),
+        p_pm1, p_pm25, p_pm10, p_co2, p_tvoc,
+        p_temperature, p_humidity, p_hcho, p_co, p_o3, p_no2,
+        p_heaviside_pm25, p_mad_spike_pm25, p_mqtt_broker
     )
     ON CONFLICT (time, device_id) DO UPDATE SET
         -- Keep the first value (from primary broker if both send)
-        mqtt_broker = CASE 
+        mqtt_broker = CASE
             WHEN sensor_data.mqtt_broker = 'primary' THEN sensor_data.mqtt_broker
             ELSE EXCLUDED.mqtt_broker
         END;
@@ -105,7 +135,9 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE VIEW latest_sensor_readings AS
 SELECT DISTINCT ON (device_id)
     device_id,
+    location,
     time,
+    pm1,
     pm25,
     pm10,
     co2,
@@ -113,9 +145,21 @@ SELECT DISTINCT ON (device_id)
     temperature,
     humidity,
     hcho,
+    co,
+    o3,
+    no2,
+    heaviside_pm25,
+    mad_spike_pm25,
     mqtt_broker
 FROM sensor_data
 ORDER BY device_id, time DESC;
+
+-- Convenience views per location
+CREATE OR REPLACE VIEW sensor_data_indoor  AS
+    SELECT * FROM sensor_data WHERE location = 'indoor';
+
+CREATE OR REPLACE VIEW sensor_data_outdoor AS
+    SELECT * FROM sensor_data WHERE location = 'outdoor';
 
 -- Create view for data quality metrics
 CREATE OR REPLACE VIEW data_quality_metrics AS

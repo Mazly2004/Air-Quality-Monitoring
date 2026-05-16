@@ -12,7 +12,7 @@ const char* ssid = "INNOV_HUB";
 const char* password = "wkProg219!";
 const char* mqtt_server = "10.144.4.20";
 const int mqtt_port = 1883;
-const char* mqtt_topic = "sensors/esp32_02";
+const char* mqtt_topic = "sensors/indoor/esp32_02";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
