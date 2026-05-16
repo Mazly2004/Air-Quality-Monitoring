@@ -20,7 +20,7 @@ const int MQTT_PRIMARY_PORT = 1883;
 const char *MQTT_SECONDARY_SERVER = "172.20.10.11";
 const int MQTT_SECONDARY_PORT = 1883;
 
-const char *MQTT_TOPIC = "sensors/esp32_01";
+const char *MQTT_TOPIC = "sensors/outdoor/esp32_01";
 
 // Failover state tracking
 bool usingPrimaryBroker = true;
@@ -109,7 +109,7 @@ void reconnect() {
       Serial.println("[HA] Attempting to reconnect to primary broker...");
       client.setServer(MQTT_PRIMARY_SERVER, MQTT_PRIMARY_PORT);
 
-      if (client.connect("ESP32_AQI_Station")) {
+      if (client.connect("ESP32_AQI_Outdoor_01")) {
         usingPrimaryBroker = true;
         connectionAttempts = 0;
         Serial.println("[HA] ✓ Reconnected to PRIMARY broker!");
@@ -136,7 +136,7 @@ void reconnect() {
     client.setServer(currentServer, currentPort);
 
     // Attempt connection
-    if (client.connect("ESP32_AQI_Station")) {
+    if (client.connect("ESP32_AQI_Outdoor_01")) {
       connectionAttempts = 0;
       Serial.printf("[HA] ✓ Connected to %s broker!\n", brokerName);
 
