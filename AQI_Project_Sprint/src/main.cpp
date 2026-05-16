@@ -41,7 +41,7 @@ const byte requestCmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79}
 uint8_t dataBuffer[26];
 int bufferIndex = 0;
 unsigned long lastRequest = 0;
-const unsigned long requestInterval = 60000;
+const unsigned long requestInterval = 10000;
 
 // Forward declarations
 void requestSensorData();
