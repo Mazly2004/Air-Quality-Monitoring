@@ -10,7 +10,7 @@
 // --- Network & MQTT Credentials ---
 const char* ssid = "TDANGARE 9321";
 const char* password = "26754|Wy";
-const char* mqtt_server = "192.168.137.26";
+const char* mqtt_server = "192.168.137.1";
 const int mqtt_port = 1883;
 const char* mqtt_topic = "telemetry/airquality";
 
