@@ -8,12 +8,12 @@
 #define TXD2 17
 
 // WiFi Configuration - UPDATE THESE!
-const char *WIFI_SSID = "INNOV_HUB";
-const char *WIFI_PASSWORD = "wkProg219!";
+const char *WIFI_SSID = "RIIW2026";
+const char *WIFI_PASSWORD = "RIIW2026";
 
 // MQTT Configuration - High Availability Setup
 // Primary MQTT Broker (Raspberry Pi 1)
-const char *MQTT_PRIMARY_SERVER = "10.144.4.20";
+const char *MQTT_PRIMARY_SERVER = "10.201.1.9";
 const int MQTT_PRIMARY_PORT = 1883;
 
 // Secondary MQTT Broker (Raspberry Pi 2) - Backup
