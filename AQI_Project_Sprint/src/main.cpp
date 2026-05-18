@@ -10,7 +10,7 @@
 // --- Network & MQTT Credentials ---
 const char* ssid = "INNOV_HUB";
 const char* password = "wkProg219!";
-const char* mqtt_server = "10.201.1.9";
+const char* mqtt_server = "10.144.4.20";
 const int mqtt_port = 1883;
 const char* mqtt_topic = "sensors/indoor/esp32_02";
 
@@ -263,8 +263,8 @@ void loop() {
         display.print("PM2.5: "); display.print(pm2_5); display.println("ug");
         
         // Show anomaly warnings on screen for PM2.5
-        if(mad_flag_pm25) display.println("! SPIKE DETECTED");
-        else if (h_flag_pm25) display.println("! LIMIT EXCEEDED");
+        if(mad_flag_pm25) display.println("Spike Detected!");
+        else if (h_flag_pm25) display.println("Limit Exceeded!");
         else display.println("Air Quality OK");
         
         display.display();
