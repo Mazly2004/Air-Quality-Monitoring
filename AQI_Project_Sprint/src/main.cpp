@@ -263,11 +263,14 @@ void loop() {
         display.print("PM2.5: "); display.print(pm2_5); display.println("ug");
         
         // Show anomaly warnings on screen for PM2.5
-        if(mad_flag_pm25) display.println("Spike Detected!");
-        else if (h_flag_pm25) display.println("Lmt Exceeded!");display.println("Mask up!!"); 
-        else display.println("Air Quality OK");
-        
-        display.display();
+        if(mad_flag_pm25) {
+          display.println("Spike Detected!");
+        } else if (h_flag_pm25) {
+          display.println("Lmt Exceeded!");
+          display.println("Mask up!!"); 
+        } else {
+          display.println("Air Quality OK");
+        }
       }
     }
   }
