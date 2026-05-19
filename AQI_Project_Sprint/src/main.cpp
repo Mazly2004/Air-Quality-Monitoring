@@ -66,7 +66,20 @@ int readings_count = 0;
 const float MAD_THRESHOLD_MULTIPLIER = 3.0; // 'k' value
 
 // --- HELPER FUNCTIONS FOR MATH ---
+// --- HELPER FUNCTIONS FOR MATH ---
 
+// Calculate US EPA AQI for PM2.5
+int calculate_AQI_PM25(float pm) {
+  if (pm < 0) return 0;
+  if (pm <= 12.0) return round(((50.0 - 0.0) / (12.0 - 0.0)) * (pm - 0.0) + 0.0);
+  if (pm <= 35.4) return round(((100.0 - 51.0) / (35.4 - 12.1)) * (pm - 12.1) + 51.0);
+  if (pm <= 55.4) return round(((150.0 - 101.0) / (55.4 - 35.5)) * (pm - 35.5) + 101.0);
+  if (pm <= 150.4) return round(((200.0 - 151.0) / (150.4 - 55.5)) * (pm - 55.5) + 151.0);
+  if (pm <= 250.4) return round(((300.0 - 201.0) / (250.4 - 150.5)) * (pm - 150.5) + 201.0);
+  if (pm <= 350.4) return round(((400.0 - 301.0) / (350.4 - 250.5)) * (pm - 250.5) + 301.0);
+  if (pm <= 500.4) return round(((500.0 - 401.0) / (500.4 - 350.5)) * (pm - 350.5) + 401.0);
+  return 500; // Max out at 500 for values beyond the standard index
+}
 // Heaviside Step Function
 int heaviside(float value, float limit) {
   return (value >= limit) ? 1 : 0;
@@ -213,6 +226,7 @@ void loop() {
         // 1. Run Algorithms ONLY for PM2.5
         int mad_flag_pm25 = calculateMadAnomaly(pm2_5);
         int h_flag_pm25 = heaviside(pm2_5, LIMIT_PM25);
+        int aqi_pm25 = calculate_AQI_PM25(pm2_5); // Calculate AQI
 
         // Update rolling window for next calculation
         pm25_history[history_idx] = pm2_5;
@@ -224,6 +238,7 @@ void loop() {
 
         // Telegraf-parsed fields (flat, top-level keys)
         doc["pm25"] = pm2_5;
+        doc["aqi_pm25"] = aqi_pm25; // Send calculated AQI to MQTT
         doc["pm10"] = pm10;
         doc["co2"]  = co2;
         doc["tvoc"] = voc;
