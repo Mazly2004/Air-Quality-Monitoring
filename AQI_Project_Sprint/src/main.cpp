@@ -13,7 +13,7 @@ const char *WIFI_PASSWORD = "wkProg219!";
 
 // MQTT Configuration - High Availability Setup
 // Primary MQTT Broker (Raspberry Pi 1)
-const char *MQTT_PRIMARY_SERVER = "10.144.4.20";
+const char *MQTT_PRIMARY_SERVER = "10.140.10.140";
 const int MQTT_PRIMARY_PORT = 1883;
 
 // Secondary MQTT Broker (Raspberry Pi 2) - Backup
@@ -61,7 +61,7 @@ void connectWiFi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   lcd.clear();
-  lcd.setCursor(0, 0);
+  lcd.setCursor(0, 0);-------
   lcd.print("WiFi Connecting...");
 
   int attempts = 0;
