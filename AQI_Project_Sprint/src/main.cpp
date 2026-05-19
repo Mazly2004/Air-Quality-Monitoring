@@ -10,7 +10,7 @@
 // --- Network & MQTT Credentials ---
 const char* ssid = "INNOV_HUB";
 const char* password = "wkProg219!";
-const char* mqtt_server = "10.140.10.140"; // Update with your MQTT broker address
+const char* mqtt_server = "10.140.20.16"; // Update with your MQTT broker address
 const int mqtt_port = 1883;
 const char* mqtt_topic = "sensors/indoor/esp32_02";
 
