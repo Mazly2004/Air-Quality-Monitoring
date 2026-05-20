@@ -238,7 +238,7 @@ void loop() {
 
         // Telegraf-parsed fields (flat, top-level keys)
         doc["pm25"] = pm2_5;
-        doc["aqi_pm25"] = aqi_pm25; // Send calculated AQI to MQTT
+       
         doc["pm10"] = pm10;
         doc["co2"]  = co2;
         doc["tvoc"] = voc;
@@ -254,6 +254,7 @@ void loop() {
 
         // Anomaly flags for PM2.5 only
         doc["heaviside_pm25"] = h_flag_pm25;
+        doc["aqi_pm25"] = aqi_pm25; // Send calculated AQI to MQTT
         doc["mad_spike_pm25"] = mad_flag_pm25;
 
         // 3. Serialize and Publish
