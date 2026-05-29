@@ -16,7 +16,7 @@ const char* mqtt_topic = "sensors/indoor/esp32_02";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// --- Hardware Setup ---
+// --- Hardware Setup --
 TFT_eSPI tft = TFT_eSPI(); 
 
 #define RX_PIN 16
@@ -214,7 +214,12 @@ void loop() {
                 doc["hum"]  = hum;
                 doc["aqi_pm25"] = aqi_pm25;
                 doc["mad_spike_pm25"] = mad_flag_pm25;
-
+                doc["heaviside_pm25"] = h_flag_pm25;
+                doc["hcho"]= ch2o;
+                doc["co"]  = co;
+                doc["o3"]  = o3;
+                doc["no2"] = no2;
+                doc["tvoc"] = voc;
                 char jsonBuffer[512];
                 serializeJson(doc, jsonBuffer);
                 client.publish(mqtt_topic, jsonBuffer);
