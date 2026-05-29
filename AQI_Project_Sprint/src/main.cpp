@@ -9,7 +9,7 @@
 // --- Network & MQTT Credentials ---
 const char* ssid = "DT01";
 const char* password = "edwinatonde";
-const char* mqtt_server = "10.61.95.148"; 
+const char* mqtt_server = "10.26.234.148"; 
 const int mqtt_port = 1883;
 const char* mqtt_topic = "sensors/indoor/esp32_02";
 
