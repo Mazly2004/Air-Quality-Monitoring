@@ -94,7 +94,20 @@ int calculateMadAnomaly(float newValue) {
     float current_deviation = abs(newValue - median);
     return (current_deviation > (MAD_THRESHOLD_MULTIPLIER * mad)) ? 1 : 0;
 }
+void setup() {
+    Serial.begin(115200);
+    delay(1000);
+    Serial.println("System starting...");
 
+    pinMode(32, OUTPUT); // Assuming 32 is your Reset
+    digitalWrite(32, HIGH); 
+    
+    tft.init();
+    Serial.println("TFT Initialized");
+    
+    tft.fillScreen(TFT_RED); // Try to force a bright color
+    // ... rest of your code
+}
 // --- COMMS ---
 
 void setup_wifi() {
