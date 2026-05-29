@@ -17,7 +17,7 @@ const char* mqtt_topic = "sensors/indoor/esp32_02";
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// --- ZPHS01B Sensor Pins ---
+// --- ZPHS01B Sensor Pins --
 #define RX_PIN 16
 #define TX_PIN 17
 
