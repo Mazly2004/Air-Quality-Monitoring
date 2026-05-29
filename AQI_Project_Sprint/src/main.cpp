@@ -212,7 +212,7 @@ void loop() {
                 doc["co2"]  = co2;
                 doc["temp"] = temp;
                 doc["hum"]  = hum;
-                doc["aqi_pm25"] = aqi_pm25;
+                doc["pm25_aqi"] = (float)aqi_pm25;
                 doc["mad_spike_pm25"] = mad_flag_pm25;
                 doc["heaviside_pm25"] = h_flag_pm25;
                 doc["hcho"]= ch2o;
