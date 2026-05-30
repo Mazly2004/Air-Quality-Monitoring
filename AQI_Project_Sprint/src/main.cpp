@@ -122,23 +122,23 @@ void drawAQILegend() {
     
     // 51-100 Moderate
     tft.fillRect(startX, startY + gap, 15, 15, TFT_YELLOW);
-    tft.drawString(" 51-100 Mod", startX + 15, startY + gap, 2);
+    tft.drawString(" 51-100 Moderate", startX + 15, startY + gap, 2);
     
     // 101-150 Sensitive
     tft.fillRect(startX, startY + gap * 2, 15, 15, TFT_ORANGE);
-    tft.drawString(" 101-150 Sens", startX + 15, startY + gap * 2, 2);
+    tft.drawString(" 101-150 Caution", startX + 15, startY + gap * 2, 2);
     
     // 151-200 Unhealthy
     tft.fillRect(startX, startY + gap * 3, 15, 15, TFT_RED);
-    tft.drawString(" 151-200 Unh", startX + 15, startY + gap * 3, 2);
+    tft.drawString(" 151-200 bad", startX + 15, startY + gap * 3, 2);
     
     // 201-300 Very Unhealthy
     tft.fillRect(startX, startY + gap * 4, 15, 15, TFT_MAGENTA);
-    tft.drawString(" 201-300 V.Unh", startX + 15, startY + gap * 4, 2);
+    tft.drawString(" 201-300 V.bad", startX + 15, startY + gap * 4, 2);
     
     // 301+ Hazardous
     tft.fillRect(startX, startY + gap * 5, 15, 15, TFT_MAROON);
-    tft.drawString(" 301+ Haz", startX + 15, startY + gap * 5, 2);
+    tft.drawString(" 301+ Hazardous", startX + 15, startY + gap * 5, 2);
 }
 
 void setup_wifi() {
@@ -309,7 +309,7 @@ void loop() {
                     tft.drawString("ALERT: PM2.5 SPIKE DETECTED!", 20, 260, 4);
                 } else if (h_flag_pm25) {
                     tft.setTextColor(TFT_RED, TFT_BLACK);
-                    tft.drawString("DANGER: EXCEEDS WHO LIMIT!", 20, 260, 4);
+                    tft.drawString("DANGER: MASK UP!", 20, 260, 4);
                 } else {
                     tft.setTextColor(TFT_GREEN, TFT_BLACK);
                     tft.drawString("AIR QUALITY: STABLE", 20, 260, 4);
