@@ -126,15 +126,15 @@ void drawAQILegend() {
     
     // 101-150 Sensitive
     tft.fillRect(startX, startY + gap * 2, 15, 15, TFT_ORANGE);
-    tft.drawString(" 101-150 Caution", startX + 15, startY + gap * 2, 2);
+    tft.drawString(" 101-150 Sensitive", startX + 15, startY + gap * 2, 2);
     
     // 151-200 Unhealthy
     tft.fillRect(startX, startY + gap * 3, 15, 15, TFT_RED);
-    tft.drawString(" 151-200 bad", startX + 15, startY + gap * 3, 2);
+    tft.drawString(" 151-200 Unhealthy", startX + 15, startY + gap * 3, 2);
     
     // 201-300 Very Unhealthy
     tft.fillRect(startX, startY + gap * 4, 15, 15, TFT_MAGENTA);
-    tft.drawString(" 201-300 V.bad", startX + 15, startY + gap * 4, 2);
+    tft.drawString(" 201-300 V. Unhealthy", startX + 15, startY + gap * 4, 2);
     
     // 301+ Hazardous
     tft.fillRect(startX, startY + gap * 5, 15, 15, TFT_MAROON);
