@@ -108,7 +108,7 @@ void drawAQILegend() {
     int gap = 30;
     tft.setTextPadding(0); // Ensure legend doesn't clear itself
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    tft.drawString("Air Quality Key", startX, 40, 2);
+    tft.drawString("AIR QUALITY KEY", startX, 40, 2);
     tft.fillRect(startX, startY, 15, 15, TFT_GREEN);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString("0-50 Good", startX + 20, startY, 2);
