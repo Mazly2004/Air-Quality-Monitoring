@@ -62,6 +62,16 @@ int calculate_AQI_PM25(float pm) {
     return 500; 
 }
 
+// Helper function to get the color based on US EPA AQI standard
+uint16_t getAQIColor(int aqi) {
+    if (aqi <= 50)  return TFT_GREEN;       // Good
+    if (aqi <= 100) return TFT_YELLOW;      // Moderate
+    if (aqi <= 150) return TFT_ORANGE;      // Unhealthy for Sensitive Groups
+    if (aqi <= 200) return TFT_RED;         // Unhealthy
+    if (aqi <= 300) return TFT_MAGENTA;     // Very Unhealthy
+    return TFT_MAROON;                      // Hazardous
+}
+
 int heaviside(float value, float limit) {
     return (value >= limit) ? 1 : 0;
 }
@@ -95,7 +105,41 @@ int calculateMadAnomaly(float newValue) {
     return (current_deviation > (MAD_THRESHOLD_MULTIPLIER * mad)) ? 1 : 0;
 }
 
-// --- COMMS ---
+// --- COMMS & UI HELPERS ---
+
+void drawAQILegend() {
+    int startX = 330; // Positioned on the right side of the screen
+    int startY = 60;
+    int gap = 30;     // Vertical spacing between items
+    
+    tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+    tft.drawString("AQI KEY", startX, 40, 2); // Font size 2 for legend
+    
+    // 0-50 Good
+    tft.fillRect(startX, startY, 15, 15, TFT_GREEN);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.drawString(" 0-50 Good", startX + 15, startY, 2);
+    
+    // 51-100 Moderate
+    tft.fillRect(startX, startY + gap, 15, 15, TFT_YELLOW);
+    tft.drawString(" 51-100 Mod", startX + 15, startY + gap, 2);
+    
+    // 101-150 Sensitive
+    tft.fillRect(startX, startY + gap * 2, 15, 15, TFT_ORANGE);
+    tft.drawString(" 101-150 Sens", startX + 15, startY + gap * 2, 2);
+    
+    // 151-200 Unhealthy
+    tft.fillRect(startX, startY + gap * 3, 15, 15, TFT_RED);
+    tft.drawString(" 151-200 Unh", startX + 15, startY + gap * 3, 2);
+    
+    // 201-300 Very Unhealthy
+    tft.fillRect(startX, startY + gap * 4, 15, 15, TFT_MAGENTA);
+    tft.drawString(" 201-300 V.Unh", startX + 15, startY + gap * 4, 2);
+    
+    // 301+ Hazardous
+    tft.fillRect(startX, startY + gap * 5, 15, 15, TFT_MAROON);
+    tft.drawString(" 301+ Haz", startX + 15, startY + gap * 5, 2);
+}
 
 void setup_wifi() {
     tft.setCursor(10, 300);
@@ -158,13 +202,16 @@ void setup() {
     
     // Static Labels
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft.drawString("ENVIRONMENT DASHBOARD", 80, 5, 4);
+    tft.drawString("INDOOR AIR QUALITY", 80, 5, 4);
     tft.drawFastHLine(0, 35, 480, TFT_WHITE);
     
     tft.drawString("TEMP:", 20, 60, 4);
-    tft.drawString("HUMID:", 20, 110, 4);
+    tft.drawString("AQI:", 20, 110, 4);
     tft.drawString("PM2.5:", 20, 160, 4);
     tft.drawString("CO2:", 20, 210, 4);
+    
+    // Draw the AQI color key
+    drawAQILegend();
     
     setup_wifi();
     client.setServer(mqtt_server, mqtt_port);
@@ -224,19 +271,27 @@ void loop() {
                 serializeJson(doc, jsonBuffer);
                 client.publish(mqtt_topic, jsonBuffer);
 
-                // UI Updates
-                tft.setTextColor(TFT_CYAN, TFT_BLACK);
+                // --- UI Updates ---
                 char valBuf[20];
                 
+                // Temp (Default Cyan)
+                tft.setTextColor(TFT_CYAN, TFT_BLACK);
                 snprintf(valBuf, sizeof(valBuf), "%.1f C  ", temp);
                 tft.drawString(valBuf, 180, 60, 4);
                 
-                snprintf(valBuf, sizeof(valBuf), "%.1f %%  ", hum);
+                // AQI (Dynamic Color based on value)
+                tft.setTextColor(getAQIColor(aqi_pm25), TFT_BLACK);
+                snprintf(valBuf, sizeof(valBuf), "%d       ", aqi_pm25); 
                 tft.drawString(valBuf, 180, 110, 4);
                 
+                // Back to Default Cyan for remaining readings
+                tft.setTextColor(TFT_CYAN, TFT_BLACK);
+                
+                // PM2.5
                 snprintf(valBuf, sizeof(valBuf), "%d ug/m3  ", pm2_5);
                 tft.drawString(valBuf, 180, 160, 4);
                 
+                // CO2
                 snprintf(valBuf, sizeof(valBuf), "%d ppm  ", co2);
                 tft.drawString(valBuf, 180, 210, 4);
 
