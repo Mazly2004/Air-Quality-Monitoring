@@ -16,7 +16,7 @@ const char* mqtt_topic = "sensors/indoor/esp32_02";
 WiFiClient espClient;
 PubSubClient client(espClient);
 unsigned long lastMqttRetry = 0;
-const unsigned long mqttRetryInterval = 10000; // Retry every 10s (Non-blocking)
+const unsigned long mqttRetryInterval = 10000;
 
 // --- Hardware Setup --
 TFT_eSPI tft = TFT_eSPI(); 
@@ -103,33 +103,35 @@ int calculateMadAnomaly(float newValue) {
 // --- COMMS & UI HELPERS ---
 
 void drawAQILegend() {
-    int startX = 330; 
+    int startX = 290; // Moved left to fit better
     int startY = 60;
     int gap = 30;
+    tft.setTextPadding(0); // Ensure legend doesn't clear itself
     tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
-    tft.drawString("AQI KEY", startX, 40, 2);
+    tft.drawString("Air Quality Key", startX, 40, 2);
     tft.fillRect(startX, startY, 15, 15, TFT_GREEN);
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("0-50 Good", startX + 15, startY, 2);
+    tft.drawString("0-50 Good", startX + 20, startY, 2);
     tft.fillRect(startX, startY + gap, 15, 15, TFT_YELLOW);
-    tft.drawString("51-100 Moderate", startX + 15, startY + gap, 2);
+    tft.drawString("51-100 Moderate", startX + 20, startY + gap, 2);
     tft.fillRect(startX, startY + gap * 2, 15, 15, TFT_ORANGE);
-    tft.drawString("101-150 Sensitive", startX + 15, startY + gap * 2, 2); // Fixed typo here
+    tft.drawString("101-150 Sensitive", startX + 20, startY + gap * 2, 2);
     tft.fillRect(startX, startY + gap * 3, 15, 15, TFT_RED);
-    tft.drawString("151-200 Unhealthy", startX + 15, startY + gap * 3, 2);
+    tft.drawString("151-200 Unhealthy", startX + 20, startY + gap * 3, 2);
     tft.fillRect(startX, startY + gap * 4, 15, 15, TFT_MAGENTA);
-    tft.drawString("201-300 V.Unhealthy", startX + 15, startY + gap * 4, 2);
+    tft.drawString("201-300 Very Unhealthy", startX + 20, startY + gap * 4, 2);
     tft.fillRect(startX, startY + gap * 5, 15, 15, TFT_MAROON);
-    tft.drawString("301+ Hazardous", startX + 15, startY + gap * 5, 2);
+    tft.drawString(" 301+ Hazardous", startX + 20, startY + gap * 5, 2);
 }
 
 void setup_wifi() {
+    tft.setTextPadding(0);
     tft.setCursor(10, 300);
     tft.print("WiFi Connecting...");
     WiFi.begin(ssid, password);
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) { delay(500); }
-    tft.fillRect(10, 300, 300, 20, TFT_BLACK);
+    tft.fillRect(10, 300, 150, 20, TFT_BLACK);
     if(WiFi.status() == WL_CONNECTED) tft.drawString("WiFi Online", 10, 300, 2);
     else tft.drawString("WiFi Offline", 10, 300, 2);
 }
@@ -157,13 +159,12 @@ bool parseZPHS01B() {
     pm10  = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7]; 
     co2   = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9]; 
     voc   = dataBuffer[10]; 
-    // Fixed: Added parentheses to force bitwise operations to execute before subtraction
-    temp = ((((uint16_t)dataBuffer[11] << 8) | dataBuffer[12]) - 500.0f) * 0.1f;
-    hum =  ((uint16_t)dataBuffer[13] << 8 | dataBuffer[14]);
-    ch2o = ((uint16_t)dataBuffer[15] << 8 | dataBuffer[16]) * 0.001f;
-    co   = ((uint16_t)dataBuffer[17] << 8 | dataBuffer[18]) * 0.1f;
-    o3   = ((uint16_t)dataBuffer[19] << 8 | dataBuffer[20]) * 0.01f;
-    no2  = ((uint16_t)dataBuffer[21] << 8 | dataBuffer[22]) * 0.01f;
+    temp  = ((((uint16_t)dataBuffer[11] << 8) | dataBuffer[12]) - 500.0f) * 0.1f;
+    hum   = ((uint16_t)dataBuffer[13] << 8 | dataBuffer[14]);
+    ch2o  = ((uint16_t)dataBuffer[15] << 8 | dataBuffer[16]) * 0.001f;
+    co    = ((uint16_t)dataBuffer[17] << 8 | dataBuffer[18]) * 0.1f;
+    o3    = ((uint16_t)dataBuffer[19] << 8 | dataBuffer[20]) * 0.01f;
+    no2   = ((uint16_t)dataBuffer[21] << 8 | dataBuffer[22]) * 0.01f;
     return true;
 }
 
@@ -171,14 +172,18 @@ void setup() {
     Serial.begin(115200);
     Serial2.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
     tft.init(); tft.setRotation(1); tft.fillScreen(TFT_BLACK);
-    tft.setTextPadding(240); // Smooth clearing of old values
+    
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft.drawString("INDOOR AIR QUALITY", 80, 5, 4);
+    tft.drawCentreString("INDOOR AIR QUALITY", 240, 5, 4);
     tft.drawFastHLine(0, 35, 480, TFT_WHITE);
-    tft.drawString("TEMP:", 20, 60, 4);
-    tft.drawString("AQI:", 20, 110, 4);
-    tft.drawString("PM2.5:", 20, 160, 4);
-    tft.drawString("CO2:", 20, 210, 4);
+
+    // Left side labels
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.drawString("TEMP:", 10, 60, 4);
+    tft.drawString("AQI:", 10, 110, 4);
+    tft.drawString("PM2.5:", 10, 160, 4);
+    tft.drawString("CO2:", 10, 210, 4);
+
     drawAQILegend();
     setup_wifi();
     client.setServer(mqtt_server, mqtt_port);
@@ -187,11 +192,7 @@ void setup() {
 }
 
 void loop() {
-    // Added: Reconnect WiFi if it drops
-    if (WiFi.status() != WL_CONNECTED) {
-        WiFi.reconnect();
-    }
-
+    if (WiFi.status() != WL_CONNECTED) WiFi.reconnect();
     if (!client.connected()) try_reconnect_mqtt();
     else client.loop();
 
@@ -221,28 +222,34 @@ void loop() {
                 }
 
                 char vB[20];
-                tft.setTextColor(TFT_CYAN, TFT_BLACK);
-                snprintf(vB, sizeof(vB), "%.1f C", temp); tft.drawString(vB, 180, 60, 4);
-                tft.setTextColor(getAQIColor(aqi), TFT_BLACK);
-                snprintf(vB, sizeof(vB), "%d", aqi); tft.drawString(vB, 180, 110, 4);
-                tft.setTextColor(TFT_CYAN, TFT_BLACK);
-                snprintf(vB, sizeof(vB), "%d ug/m3", pm2_5); tft.drawString(vB, 180, 160, 4);
-                snprintf(vB, sizeof(vB), "%d ppm", co2); tft.drawString(vB, 180, 210, 4);
+                int valX = 125; // Values starting X position
+                tft.setTextPadding(160); // Padding only large enough for values, avoids legend area
 
+                tft.setTextColor(TFT_CYAN, TFT_BLACK);
+                snprintf(vB, sizeof(vB), "%.1f C", temp); tft.drawString(vB, valX, 60, 4);
+                
+                tft.setTextColor(getAQIColor(aqi), TFT_BLACK);
+                snprintf(vB, sizeof(vB), "%d", aqi); tft.drawString(vB, valX, 110, 4);
+                
+                tft.setTextColor(TFT_CYAN, TFT_BLACK);
+                snprintf(vB, sizeof(vB), "%d ug/m3", pm2_5); tft.drawString(vB, valX, 160, 4);
+                snprintf(vB, sizeof(vB), "%d ppm", co2); tft.drawString(vB, valX, 210, 4);
+
+                // Clock and Warnings
+                tft.setTextPadding(0); 
                 RtcDateTime now = Rtc.GetDateTime();
                 char tB[15]; snprintf(tB, sizeof(tB), "%02d:%02d:%02d", now.Hour(), now.Minute(), now.Second());
                 tft.setTextColor(TFT_WHITE, TFT_BLACK); tft.drawString(tB, 340, 300, 2);
 
-                // --- AQI Category Warnings ---
-                tft.fillRect(10, 255, 310, 40, TFT_BLACK);
+                tft.fillRect(10, 255, 270, 40, TFT_BLACK);
                 if (aqi > 150) { 
-                    tft.setTextColor(TFT_RED, TFT_BLACK); tft.drawString("DANGER: MASK UP!", 20, 260, 4);
+                    tft.setTextColor(TFT_RED, TFT_BLACK); tft.drawString("DANGER: MASK UP!", 15, 260, 4);
                 } else if (aqi > 100) { 
-                    tft.setTextColor(TFT_ORANGE, TFT_BLACK); tft.drawString("CAUTION: UNHEALTHY AIR", 20, 260, 4);
+                    tft.setTextColor(TFT_ORANGE, TFT_BLACK); tft.drawString("CAUTION: UNHEALTHY", 15, 260, 4);
                 } else if (mad_flag) { 
-                    tft.setTextColor(TFT_YELLOW, TFT_BLACK); tft.drawString("ALERT: SUDDEN SPIKE!", 20, 260, 4);
+                    tft.setTextColor(TFT_YELLOW, TFT_BLACK); tft.drawString("ALERT: SPIKE!", 15, 260, 4);
                 } else { 
-                    tft.setTextColor(TFT_GREEN, TFT_BLACK); tft.drawString("AIR QUALITY: STABLE", 20, 260, 4);
+                    tft.setTextColor(TFT_GREEN, TFT_BLACK); tft.drawString("AIR: STABLE", 15, 260, 4);
                 }
             }
         }
