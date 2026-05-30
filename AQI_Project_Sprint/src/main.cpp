@@ -134,7 +134,7 @@ void drawAQILegend() {
     
     // 201-300 Very Unhealthy
     tft.fillRect(startX, startY + gap * 4, 15, 15, TFT_MAGENTA);
-    tft.drawString(" 201-300 V. Unhealthy", startX + 15, startY + gap * 4, 2);
+    tft.drawString(" 201-300 V.Unhealthy", startX + 15, startY + gap * 4, 2);
     
     // 301+ Hazardous
     tft.fillRect(startX, startY + gap * 5, 15, 15, TFT_MAROON);
