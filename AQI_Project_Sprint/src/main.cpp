@@ -42,7 +42,7 @@ uint8_t voc;
 float temp, hum, ch2o, co, o3, no2;
 
 // --- EDGE AI & ANOMALY DETECTION ---
-const int WINDOW_SIZE = 20; // Increased to 20
+const int WINDOW_SIZE = 20; 
 float pm25_history[WINDOW_SIZE];
 int history_idx = 0;
 int readings_count = 0;
@@ -114,13 +114,13 @@ void drawAQILegend() {
     tft.fillRect(startX, startY + gap, 15, 15, TFT_YELLOW);
     tft.drawString("51-100 Moderate", startX + 15, startY + gap, 2);
     tft.fillRect(startX, startY + gap * 2, 15, 15, TFT_ORANGE);
-    tft.drawString("101-150 Sensetive", startX + 15, startY + gap * 2, 2);
+    tft.drawString("101-150 Sensitive", startX + 15, startY + gap * 2, 2); // Fixed typo here
     tft.fillRect(startX, startY + gap * 3, 15, 15, TFT_RED);
     tft.drawString("151-200 Unhealthy", startX + 15, startY + gap * 3, 2);
     tft.fillRect(startX, startY + gap * 4, 15, 15, TFT_MAGENTA);
     tft.drawString("201-300 V.Unhealthy", startX + 15, startY + gap * 4, 2);
     tft.fillRect(startX, startY + gap * 5, 15, 15, TFT_MAROON);
-    tft.drawString(" 301+ Hazardous", startX + 15, startY + gap * 5, 2);
+    tft.drawString("301+ Hazardous", startX + 15, startY + gap * 5, 2);
 }
 
 void setup_wifi() {
@@ -157,7 +157,8 @@ bool parseZPHS01B() {
     pm10  = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7]; 
     co2   = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9]; 
     voc   = dataBuffer[10]; 
-    temp = ((uint16_t)dataBuffer[11] << 8 | dataBuffer[12] - 500.0f) * 0.1f;
+    // Fixed: Added parentheses to force bitwise operations to execute before subtraction
+    temp = ((((uint16_t)dataBuffer[11] << 8) | dataBuffer[12]) - 500.0f) * 0.1f;
     hum =  ((uint16_t)dataBuffer[13] << 8 | dataBuffer[14]);
     ch2o = ((uint16_t)dataBuffer[15] << 8 | dataBuffer[16]) * 0.001f;
     co   = ((uint16_t)dataBuffer[17] << 8 | dataBuffer[18]) * 0.1f;
@@ -186,6 +187,11 @@ void setup() {
 }
 
 void loop() {
+    // Added: Reconnect WiFi if it drops
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.reconnect();
+    }
+
     if (!client.connected()) try_reconnect_mqtt();
     else client.loop();
 
