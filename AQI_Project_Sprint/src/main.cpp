@@ -7,10 +7,12 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
+
 // --- Configuration ---
 const char apn[] = "internet.netone";
-const char* mqtt_server = "10.26.234.148";
-const char* mqtt_topic = "sensors/indoor/esp32_02";
+const char* mqtt_server = "broker.hivemq.com"; // Publicly reachable domain
+const char* mqtt_topic = "netone/fixed/node/esp32_02/data"; // Highly unique topic
+
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
