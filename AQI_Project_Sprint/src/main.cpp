@@ -10,13 +10,13 @@
 // --- Configuration ---
 const char apn[] = "internet.netone";
 
-// BYPASS OPTION A: HiveMQ's alternative pure IPv4 routing address (Active)
-const char* mqtt_server = "www.mqtt-dashboard.com"; 
-const int mqtt_port = 1883;
-
-// BYPASS OPTION B: Direct IP to Mosquitto (Uncomment below if Option A prints MQ:-2)
-// const char* mqtt_server = "91.121.93.94"; 
+// BYPASS OPTION A: HiveMQ's alternative pure IPv4 routing address (Commented out)
+// const char* mqtt_server = "www.mqtt-dashboard.com"; 
 // const int mqtt_port = 1883;
+
+// BYPASS OPTION B: Direct IP to Mosquitto (Active - Bypasses slow cellular DNS to fix MQ:-1)
+const char* mqtt_server = "91.121.93.94"; 
+const int mqtt_port = 1883;
 
 // BYPASS OPTION C: Alternate Port (Uncomment below if NetOne blocks port 1883)
 // const char* mqtt_server = "test.mosquitto.org";
@@ -127,16 +127,30 @@ void updateGPS() {
             lon = g_lon;
             gpsLocked = true;
         }
+        
+        // Convert UTC to Central Africa Time (CAT) / UTC+2
+        int local_h = (g_h + 2) % 24;
+
         char tBuf[16];
-        snprintf(tBuf, sizeof(tBuf), "%02d:%02d:%02d", g_h, g_min, g_s);
+        snprintf(tBuf, sizeof(tBuf), "%02d:%02d:%02d", local_h, g_min, g_s);
         gpsTime = String(tBuf);
     }
+}
+
+// Checksum verifier for the ZPHS01B sensor
+bool checkSensorChecksum(uint8_t *packet) {
+    uint8_t checksum = 0;
+    for (int i = 1; i < 25; i++) {
+        checksum += packet[i];
+    }
+    checksum = (~checksum) + 1;
+    return (checksum == packet[25]);
 }
 
 void setup() {
     // 1. Initialize Serial Interfaces
     Serial.begin(115200);
-    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); // Must match SIM7000G boot configuration
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); 
     SerialSensor.begin(9600, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
 
     // 2. Local Visuals Setup
@@ -168,7 +182,10 @@ void setup() {
     }
 
     modem.sendAT("+CGNSPWR=1"); // Keep GNSS chip hot
-    mqtt.setServer(mqtt_server, mqtt_port); // Hook up server and dynamic port
+    
+    // 5. MQTT Setup
+    mqtt.setServer(mqtt_server, mqtt_port); 
+    mqtt.setSocketTimeout(30); // Give GPRS 30 full seconds to perform TCP handshake and prevent MQ:-1
 }
 
 void loop() {
@@ -186,11 +203,11 @@ void loop() {
             lastReconnectAttempt = millis();
             Serial.print("[MQTT] Routing packets to public cloud broker... ");
             
-            // Appends an ephemeral unique tag to prevent being forcibly kicked off by another node
-            String clientId = "NetOneNode_";
-            clientId += String(random(0xffff), HEX);
+            // Replaced String concatenation with memory-safe character array 
+            char clientId[32];
+            snprintf(clientId, sizeof(clientId), "NetOneNode_%04lX", random(0xffff));
             
-            if (mqtt.connect(clientId.c_str())) {
+            if (mqtt.connect(clientId)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
             } else {
                 Serial.print("FAILED, Error State rc=");
@@ -224,47 +241,53 @@ void loop() {
         if (SerialSensor.available() >= 26) {
             SerialSensor.readBytes(dataBuf, 26);
             if (dataBuf[1] == 0x86) {
-                // Read and assemble binary registers
-                pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
-                co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
-                temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
-                hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
-
-                // --- Print Updates to Local LCD Matrix ---
-                lcd.setCursor(0, 0);
-                lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
-                lcd.setCursor(0, 1);
-                lcd.print("PM2.5:"); lcd.print(pm25); lcd.print(" CO2:"); lcd.print(co2); lcd.print("  ");
-                lcd.setCursor(0, 2);
-                lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(gpsTime);
                 
-                // Smart Diagnostic LCD Output (Replacing fixed MQTT:ER)
-                lcd.setCursor(0, 3);
-                if (mqtt.connected()) {
-                    lcd.print("MQTT:OK ");
-                } else {
-                    lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("   "); // Prints the exact error code digit
-                }
-                lcd.print("Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
+                // Verify checksum before updating data
+                if (checkSensorChecksum(dataBuf)) {
+                    // Read and assemble binary registers
+                    pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
+                    co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
+                    temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
+                    hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
 
-                // --- Compile Structured JSON Payload for Telegraf & Grafana ---
-                if (mqtt.connected()) {
-                    JsonDocument doc;
-                    doc["pm25"] = pm25;
-                    doc["co2"]  = co2;
-                    doc["temp"] = temp; 
-                    doc["hum"]  = hum;  
-                    doc["lat"]  = lat;
-                    doc["lon"]  = lon;
+                    // --- Print Updates to Local LCD Matrix ---
+                    lcd.setCursor(0, 0);
+                    lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
+                    lcd.setCursor(0, 1);
+                    lcd.print("PM2.5:"); lcd.print(pm25); lcd.print(" CO2:"); lcd.print(co2); lcd.print("  ");
+                    lcd.setCursor(0, 2);
+                    lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(gpsTime);
                     
-                    char jb[128]; 
-                    serializeJson(doc, jb);
-                    
-                    if (mqtt.publish(mqtt_topic, jb)) {
-                        Serial.println("[MQTT] Payload safely dispatched to cloud bridge.");
+                    // Smart Diagnostic LCD Output
+                    lcd.setCursor(0, 3);
+                    if (mqtt.connected()) {
+                        lcd.print("MQTT:OK ");
                     } else {
-                        Serial.println("[MQTT] Warning: Packet dropped at transmission interface.");
+                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("   "); 
                     }
+                    lcd.print("Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
+
+                    // --- Compile Structured JSON Payload for Telegraf & Grafana ---
+                    if (mqtt.connected()) {
+                        JsonDocument doc;
+                        doc["pm25"] = pm25;
+                        doc["co2"]  = co2;
+                        doc["temp"] = temp; 
+                        doc["hum"]  = hum;  
+                        doc["lat"]  = lat;
+                        doc["lon"]  = lon;
+                        
+                        char jb[128]; 
+                        serializeJson(doc, jb);
+                        
+                        if (mqtt.publish(mqtt_topic, jb)) {
+                            Serial.println("[MQTT] Payload safely dispatched to cloud bridge.");
+                        } else {
+                            Serial.println("[MQTT] Warning: Packet dropped at transmission interface.");
+                        }
+                    }
+                } else {
+                    Serial.println("[Sensor] Checksum failed. Corrupt packet discarded.");
                 }
             }
         } else {
