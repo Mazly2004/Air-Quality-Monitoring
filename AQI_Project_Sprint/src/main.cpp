@@ -10,17 +10,9 @@
 // --- Configuration ---
 const char apn[] = "internet.netone";
 
-// BYPASS OPTION A: HiveMQ's alternative pure IPv4 routing address (Commented out)
-// const char* mqtt_server = "www.mqtt-dashboard.com"; 
-// const int mqtt_port = 1883;
-
-// BYPASS OPTION B: Direct IP to Mosquitto (Active - Bypasses slow cellular DNS to fix MQ:-1)
-const char* mqtt_server = "91.121.93.94"; 
+// NEW BROKER: EMQX Public Broker (To rule out Mosquitto/HiveMQ IP blacklisting)
+const char* mqtt_server = "broker.emqx.io"; 
 const int mqtt_port = 1883;
-
-// BYPASS OPTION C: Alternate Port (Uncomment below if NetOne blocks port 1883)
-// const char* mqtt_server = "test.mosquitto.org";
-// const int mqtt_port = 1884; 
 
 const char* mqtt_topic = "netone/fixed/node/esp32_02/data"; // Unique topic for your Telegraf stack
 
@@ -185,7 +177,7 @@ void setup() {
     
     // 5. MQTT Setup
     mqtt.setServer(mqtt_server, mqtt_port); 
-    mqtt.setSocketTimeout(30); // Give GPRS 30 full seconds to perform TCP handshake and prevent MQ:-1
+    mqtt.setSocketTimeout(30); // Give GPRS 30 full seconds to perform TCP handshake
 }
 
 void loop() {
