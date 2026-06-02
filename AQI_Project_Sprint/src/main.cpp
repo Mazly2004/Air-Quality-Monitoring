@@ -9,8 +9,8 @@
 
 // --- Configuration ---
 const char apn[] = "internet.netone";
-const char* mqtt_server = "broker.hivemq.com"; // Publicly reachable domain
-const char* mqtt_topic = "netone/fixed/node/esp32_02/data"; // Highly unique topic
+const char* mqtt_server = "broker.hivemq.com";                 // Publicly reachable domain
+const char* mqtt_topic = "netone/fixed/node/esp32_02/data";    // Unique topic for your Telegraf stack
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -22,17 +22,19 @@ const char* mqtt_topic = "netone/fixed/node/esp32_02/data"; // Highly unique top
 #define I2C_SCL      22  
 
 // --- Objects ---
-HardwareSerial SerialAT(1);      // SIM7000G
-HardwareSerial SerialSensor(2);  // ZPHS01B
+HardwareSerial SerialAT(1);      // SIM7000G Cellular Core
+HardwareSerial SerialSensor(2);  // ZPHS01B Air Quality Sensor
 TinyGsm modem(SerialAT);
 TinyGsmClient cellularClient(modem);
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-// --- Global Data ---
-uint16_t pm25, co2, pm10;
-float temp, hum, lat = 0.0, lon = 0.0;
+// --- Global Telemetry Data ---
+uint16_t pm25 = 0, co2 = 0, pm10 = 0;
+float temp = 0.0, hum = 0.0, lat = 0.0, lon = 0.0;
 String gpsTime = "Searching...";
+
+// --- Timers ---
 unsigned long lastRequest = 0;
 unsigned long lastReconnectAttempt = 0; 
 unsigned long lastGprsAttempt = 0;
@@ -40,45 +42,66 @@ unsigned long lastTimeSync = 0;
 bool gpsLocked = false;
 uint8_t dataBuf[26];
 
-// --- Smart Adaptive Power-On Function ---
+// --- Smart Adaptive Power-On Logic ---
 void powerModemResilient() {
     pinMode(MODEM_PWR, OUTPUT);
-    Serial.println("[Power] Checking if modem is already active...");
+    Serial.println("[Power] Interrogating modem state...");
+    lcd.setCursor(0, 1); lcd.print("Modem: Checking...  ");
     
-    // Test if it responds right now without changing anything
+    // Test if the modem is already awake from a previous software crash/reset
     for (int i = 0; i < 4; i++) {
         SerialAT.println("AT");
         delay(200);
         if (SerialAT.available()) {
             String response = SerialAT.readString();
             if (response.indexOf("OK") != -1) {
-                Serial.println("[Power] Modem is already awake! Skipping toggle.");
+                Serial.println("[Power] Modem is already online! Safe-skipping toggle sequence.");
+                lcd.setCursor(0, 1); lcd.print("Modem: Already ON   ");
                 return;
             }
         }
     }
 
-    // Sequence A: High -> Low pulse 
-    Serial.println("[Power] Powering Modem...");
+    // Sequence A: Standard LilyGo High -> Low hardware trigger pulse
+    Serial.println("[Power] No response. Launching Pulse Sequence A...");
+    lcd.setCursor(0, 1); lcd.print("Modem: Powering A...");
     digitalWrite(MODEM_PWR, HIGH);
     delay(300);
     digitalWrite(MODEM_PWR, LOW);
-    delay(4000); // Wait for firmware boot
+    delay(4000); // Give hardware time to spin up cellular firmware
 
     for (int i = 0; i < 4; i++) {
         SerialAT.println("AT");
         delay(200);
         if (SerialAT.available()) {
             String response = SerialAT.readString();
-            if (response.indexOf("OK") != -1) return;
+            if (response.indexOf("OK") != -1) {
+                Serial.println("[Power] Hardware initialized via Sequence A.");
+                return;
+            }
         }
     }
 
-    // Sequence B: Low -> High pulse (Fallback)
+    // Sequence B: Alternative Low -> High hardware pulse (for secondary hardware revisions)
+    Serial.println("[Power] Still dark. Launching Fallback Sequence B...");
+    lcd.setCursor(0, 1); lcd.print("Modem: Powering B...");
     digitalWrite(MODEM_PWR, LOW);
     delay(1000);
     digitalWrite(MODEM_PWR, HIGH);
     delay(4000); 
+    
+    for (int i = 0; i < 4; i++) {
+        SerialAT.println("AT");
+        delay(200);
+        if (SerialAT.available()) {
+            String response = SerialAT.readString();
+            if (response.indexOf("OK") != -1) {
+                Serial.println("[Power] Hardware initialized via Sequence B.");
+                return;
+            }
+        }
+    }
+    Serial.println("[Power] WARNING: Physical lines unresponsive. Check 18650 lipo cell.");
 }
 
 void updateGPS() {
@@ -99,50 +122,75 @@ void updateGPS() {
 }
 
 void setup() {
+    // 1. Initialize Serial Interfaces
     Serial.begin(115200);
-    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); // CORRECTED TO 115200
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); // Must match SIM7000G boot configuration
     SerialSensor.begin(9600, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
 
+    // 2. Local Visuals Setup
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     lcd.print("NETONE MOBILE IOT");
 
+    // Seed randomness for distinct MQTT identification hashes
+    randomSeed(analogRead(0));
+
+    // 3. Boot Cellular Core
     powerModemResilient();
 
-    lcd.setCursor(0, 1); lcd.print("Modem: Starting...");
-    if (!modem.init()) { // Changed restart() to init() for stability
+    lcd.setCursor(0, 1); lcd.print("Modem: Syncing...   ");
+    if (!modem.init()) { 
+        Serial.println("[System] Base init failed. Dropping back to heavy hardware reset...");
         if (!modem.restart()) {
-            lcd.setCursor(0, 2); lcd.print("ERROR: NO MODEM");
+            lcd.setCursor(0, 2); lcd.print("ERROR: NO MODEM   ");
             while(true);
         }
     }
 
-    lcd.setCursor(0, 2); lcd.print("GPRS: Connecting...");
+    // 4. Attach Cellular Data Network
+    lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
+    Serial.println("[Network] Attaching to NetOne network...");
     if (modem.gprsConnect(apn)) {
         lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE   ");
+        Serial.println("[Network] Cellular data attached successfully.");
     }
 
-    modem.sendAT("+CGNSPWR=1"); // Enable GPS
+    modem.sendAT("+CGNSPWR=1"); // Keep GNSS chip hot
     mqtt.setServer(mqtt_server, 1883);
 }
 
 void loop() {
-    // --- Network & MQTT Management ---
+    // --- Network Guard & Self-Healing Auto-Reconnect ---
     if (!modem.isGprsConnected()) {
         if (millis() - lastGprsAttempt > 20000) {
             lastGprsAttempt = millis();
+            Serial.println("[Network] Link dropped. Repairing GPRS connection...");
             modem.gprsConnect(apn);
         }
-    } else if (!mqtt.connected()) {
+    } 
+    // --- Safe, Collision-Proof MQTT Connection Sequence ---
+    else if (!mqtt.connected()) {
         if (millis() - lastReconnectAttempt > 10000) {
             lastReconnectAttempt = millis();
-            mqtt.connect("NetOne_Mobile_Node");
+            Serial.print("[MQTT] Routing packets to public cloud broker... ");
+            
+            // Appends an ephemeral unique tag to prevent being forcibly kicked off by another node
+            String clientId = "NetOneNode_";
+            clientId += String(random(0xffff), HEX);
+            
+            if (mqtt.connect(clientId.c_str())) {
+                Serial.println("CONNECTED SUCCESSFULLY!");
+            } else {
+                Serial.print("FAILED, Error State rc=");
+                Serial.print(mqtt.state()); 
+                Serial.println(" (Check airtime credit or telco tower data blocking)");
+            }
         }
     } else {
         mqtt.loop();
     }
 
-    // --- 10-second Sensor Data Cycle ---
+    // --- 10-Second Passive Sensor Request Pulse ---
     if (millis() - lastRequest > 10000) {
         lastRequest = millis();
         byte cmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
@@ -154,23 +202,23 @@ void loop() {
         }
     }
 
-    // --- Process Sensor Serial Safely ---
+    // --- High-Performance Sensor Buffer Parser ---
     while (SerialSensor.available() > 0) {
         if (SerialSensor.peek() != 0xFF) {
-            SerialSensor.read(); // Clear misaligned bytes
+            SerialSensor.read(); // Drop stray asynchronous framing debris
             continue;
         }
 
         if (SerialSensor.available() >= 26) {
             SerialSensor.readBytes(dataBuf, 26);
             if (dataBuf[1] == 0x86) {
-                // Parse Values
+                // Read and assemble binary registers
                 pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
                 co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
                 temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
                 hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
 
-                // --- LCD Layout ---
+                // --- Print Updates to Local LCD Matrix ---
                 lcd.setCursor(0, 0);
                 lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
                 lcd.setCursor(0, 1);
@@ -181,23 +229,28 @@ void loop() {
                 lcd.print(mqtt.connected() ? "MQTT:OK" : "MQTT:ER");
                 lcd.print(" Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
 
-                // --- MQTT Publish ---
+                // --- Compile Structured JSON Payload for Telegraf & Grafana ---
                 if (mqtt.connected()) {
                     JsonDocument doc;
                     doc["pm25"] = pm25;
-                    doc["co2"] = co2;
-                    doc["temp"] = temp; // Re-added
-                    doc["hum"] = hum;   // Re-added
-                    doc["lat"] = lat;
-                    doc["lon"] = lon;
+                    doc["co2"]  = co2;
+                    doc["temp"] = temp; 
+                    doc["hum"]  = hum;  
+                    doc["lat"]  = lat;
+                    doc["lon"]  = lon;
                     
-                    char jb[128]; // Increased buffer slightly for floats
+                    char jb[128]; 
                     serializeJson(doc, jb);
-                    mqtt.publish(mqtt_topic, jb);
+                    
+                    if (mqtt.publish(mqtt_topic, jb)) {
+                        Serial.println("[MQTT] Payload safely dispatched to cloud bridge.");
+                    } else {
+                        Serial.println("[MQTT] Warning: Packet dropped at transmission interface.");
+                    }
                 }
             }
         } else {
-            break; // Wait for more data
+            break; 
         }
     }
 }
