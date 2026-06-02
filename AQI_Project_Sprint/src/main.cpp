@@ -34,15 +34,17 @@ uint16_t pm25, co2, pm10;
 float temp, hum, lat = 0.0, lon = 0.0;
 String gpsTime = "Searching...";
 unsigned long lastRequest = 0;
-unsigned long lastReconnectAttempt = 0; // Added for safe MQTT reconnects
+unsigned long lastMqttAttempt = 0; 
+unsigned long lastGprsAttempt = 0;
 uint8_t dataBuf[26];
 
 // --- Functions ---
 void powerModem() {
     pinMode(MODEM_PWR, OUTPUT);
+    // Standard power-on pulse for SIM7000
     digitalWrite(MODEM_PWR, LOW); delay(100);
-    digitalWrite(MODEM_PWR, HIGH); delay(1000); 
-    digitalWrite(MODEM_PWR, LOW);
+    digitalWrite(MODEM_PWR, HIGH); delay(1200); 
+    digitalWrite(MODEM_PWR, LOW); delay(500);
 }
 
 void updateGPS() {
@@ -50,7 +52,6 @@ void updateGPS() {
     int g_vsat = 0, g_usat = 0;
     int g_y = 0, g_m = 0, g_d = 0, g_h = 0, g_min = 0, g_s = 0;
 
-    // Updated TinyGSM signature
     if (modem.getGPS(&g_lat, &g_lon, &g_speed, &g_alt, &g_vsat, &g_usat, &g_accuracy, &g_y, &g_m, &g_d, &g_h, &g_min, &g_s)) {
         lat = g_lat; 
         lon = g_lon;
@@ -88,22 +89,24 @@ void setup() {
 }
 
 void loop() {
-    // --- Network & MQTT Management ---
-    if (!modem.isGprsConnected()) {
-        modem.gprsConnect(apn);
-    }
-    
-    if (!mqtt.connected()) {
-        // Non-blocking reconnect to avoid hammering the broker/modem
-        if (millis() - lastReconnectAttempt > 5000) {
-            lastReconnectAttempt = millis();
+    // --- Non-blocking Network Management ---
+    bool gprsConnected = modem.isGprsConnected();
+
+    if (!gprsConnected) {
+        if (millis() - lastGprsAttempt > 20000) { // Try GPRS every 20 seconds
+            lastGprsAttempt = millis();
+            modem.gprsConnect(apn);
+        }
+    } else if (!mqtt.connected()) {
+        if (millis() - lastMqttAttempt > 10000) { // Try MQTT every 10 seconds
+            lastMqttAttempt = millis();
             mqtt.connect("NetOne_Mobile_Node");
         }
     } else {
         mqtt.loop();
     }
 
-    // --- 10-second Sensor Data Cycle ---
+    // --- 10-second Sensor Data Request ---
     if (millis() - lastRequest > 10000) {
         lastRequest = millis();
         byte cmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
@@ -111,45 +114,57 @@ void loop() {
         updateGPS();
     }
 
-    // --- Process Sensor Serial ---
-    if (SerialSensor.available() >= 26) {
-        SerialSensor.readBytes(dataBuf, 26);
-        if (dataBuf[0] == 0xFF && dataBuf[1] == 0x86) {
-            // Parse Values
-            pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
-            co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
-            temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
-            hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
+    // --- Robust Self-Healing Serial Parsing ---
+    while (SerialSensor.available() > 0) {
+        // Peek at the first byte to verify alignment
+        if (SerialSensor.peek() != 0xFF) {
+            SerialSensor.read(); // Discard garbage bytes until we hit 0xFF
+            continue;
+        }
 
-            // --- LCD Layout ---
-            // Row 0: Environment
-            lcd.setCursor(0, 0);
-            lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
+        // Check if a full packet has arrived
+        if (SerialSensor.available() >= 26) {
+            SerialSensor.readBytes(dataBuf, 26);
             
-            // Row 1: Air Quality
-            lcd.setCursor(0, 1);
-            lcd.print("PM2.5:"); lcd.print(pm25); lcd.print(" CO2:"); lcd.print(co2); lcd.print("  ");
-            
-            // Row 2: Location
-            lcd.setCursor(0, 2);
-            lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(gpsTime);
+            // Confirm correct response command
+            if (dataBuf[1] == 0x86) {
+                // Parse Values
+                pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
+                co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
+                temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
+                hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
 
-            // Row 3: Network Status
-            lcd.setCursor(0, 3);
-            lcd.print(mqtt.connected() ? "MQTT:OK" : "MQTT:ER");
-            lcd.print(" Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
+                // --- LCD Layout ---
+                lcd.setCursor(0, 0);
+                lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
+                
+                lcd.setCursor(0, 1);
+                lcd.print("PM2.5:"); lcd.print(pm25); lcd.print(" CO2:"); lcd.print(co2); lcd.print("  ");
+                
+                lcd.setCursor(0, 2);
+                lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(gpsTime);
 
-            // --- MQTT Publish ---
-            JsonDocument doc;
-            doc["pm25"] = pm25;
-            doc["co2"] = co2;
-            doc["lat"] = lat;
-            doc["lon"] = lon;
-            
-            // Reduced buffer slightly for optimization
-            char jb[96];
-            serializeJson(doc, jb);
-            mqtt.publish(mqtt_topic, jb);
+                lcd.setCursor(0, 3);
+                lcd.print(mqtt.connected() ? "MQTT:OK" : "MQTT:ER");
+                lcd.print(" Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
+
+                // --- MQTT Publish ---
+                if (mqtt.connected()) {
+                    JsonDocument doc;
+                    doc["pm25"] = pm25;
+                    doc["co2"] = co2;
+                    doc["temp"] = temp;
+                    doc["hum"] = hum;
+                    doc["lat"] = lat;
+                    doc["lon"] = lon;
+                    
+                    char jb[128]; // Slightly bumped to comfortably fit temp/hum
+                    serializeJson(doc, jb);
+                    mqtt.publish(mqtt_topic, jb);
+                }
+            }
+        } else {
+            break; // Frame is incomplete; wait for more data in the next loop execution
         }
     }
 }
