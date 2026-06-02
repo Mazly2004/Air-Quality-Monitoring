@@ -9,8 +9,20 @@
 
 // --- Configuration ---
 const char apn[] = "internet.netone";
-const char* mqtt_server = "broker.hivemq.com";                 // Publicly reachable domain
-const char* mqtt_topic = "netone/fixed/node/esp32_02/data";    // Unique topic for your Telegraf stack
+
+// BYPASS OPTION A: HiveMQ's alternative pure IPv4 routing address (Active)
+const char* mqtt_server = "www.mqtt-dashboard.com"; 
+const int mqtt_port = 1883;
+
+// BYPASS OPTION B: Direct IP to Mosquitto (Uncomment below if Option A prints MQ:-2)
+// const char* mqtt_server = "91.121.93.94"; 
+// const int mqtt_port = 1883;
+
+// BYPASS OPTION C: Alternate Port (Uncomment below if NetOne blocks port 1883)
+// const char* mqtt_server = "test.mosquitto.org";
+// const int mqtt_port = 1884; 
+
+const char* mqtt_topic = "netone/fixed/node/esp32_02/data"; // Unique topic for your Telegraf stack
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -156,7 +168,7 @@ void setup() {
     }
 
     modem.sendAT("+CGNSPWR=1"); // Keep GNSS chip hot
-    mqtt.setServer(mqtt_server, 1883);
+    mqtt.setServer(mqtt_server, mqtt_port); // Hook up server and dynamic port
 }
 
 void loop() {
@@ -225,9 +237,15 @@ void loop() {
                 lcd.print("PM2.5:"); lcd.print(pm25); lcd.print(" CO2:"); lcd.print(co2); lcd.print("  ");
                 lcd.setCursor(0, 2);
                 lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(gpsTime);
+                
+                // Smart Diagnostic LCD Output (Replacing fixed MQTT:ER)
                 lcd.setCursor(0, 3);
-                lcd.print(mqtt.connected() ? "MQTT:OK" : "MQTT:ER");
-                lcd.print(" Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
+                if (mqtt.connected()) {
+                    lcd.print("MQTT:OK ");
+                } else {
+                    lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("   "); // Prints the exact error code digit
+                }
+                lcd.print("Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
 
                 // --- Compile Structured JSON Payload for Telegraf & Grafana ---
                 if (mqtt.connected()) {
