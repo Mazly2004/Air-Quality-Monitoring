@@ -14,7 +14,7 @@ const char apn[] = "internet.netone";
 const char* mqtt_server = "broker.emqx.io"; 
 const int mqtt_port = 1883;
 
-const char* mqtt_topic = "netone/fixed/node/esp32_02/telemetry"; // Unique topic for your Telegraf stack
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; // Unique topic for your Telegraf stack
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
