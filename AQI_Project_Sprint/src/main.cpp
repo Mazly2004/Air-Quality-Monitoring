@@ -140,6 +140,25 @@ void updateNetworkTime() {
     }
 }
 
+// --- EPA PM2.5 AQI Calculation ---
+int calculateAQI(uint16_t pm) {
+    float c = (float)pm;
+    int iLow = 0, iHigh = 0;
+    float cLow = 0.0, cHigh = 0.0;
+
+    if (c <= 12.0)      { iLow = 0; iHigh = 50; cLow = 0.0; cHigh = 12.0; }
+    else if (c <= 35.4) { iLow = 51; iHigh = 100; cLow = 12.1; cHigh = 35.4; }
+    else if (c <= 55.4) { iLow = 101; iHigh = 150; cLow = 35.5; cHigh = 55.4; }
+    else if (c <= 150.4){ iLow = 151; iHigh = 200; cLow = 55.5; cHigh = 150.4; }
+    else if (c <= 250.4){ iLow = 201; iHigh = 300; cLow = 150.5; cHigh = 250.4; }
+    else if (c <= 350.4){ iLow = 301; iHigh = 400; cLow = 250.5; cHigh = 350.4; }
+    else                { iLow = 401; iHigh = 500; cLow = 350.5; cHigh = 500.4; }
+
+    if (c > 500.4) return 500; // Max ceiling
+
+    return round(((iHigh - iLow) / (cHigh - cLow)) * (c - cLow) + iLow);
+}
+
 // Checksum verifier for the ZPHS01B sensor
 bool checkSensorChecksum(uint8_t *packet) {
     uint8_t checksum = 0;
@@ -260,13 +279,15 @@ void loop() {
                     temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
                     hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
 
+                    int currentAQI = calculateAQI(pm25);
+
                     // --- Print Updates to Local LCD Matrix ---
                     lcd.setCursor(0, 0);
                     lcd.print("TEMP:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  ");lcd.print("PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
-                    lcd.print("TIME:  "); lcd.print(netTime);
+                    lcd.print("TIME: "); lcd.print(netTime);
                     
                     // Smart Diagnostic LCD Output
                     lcd.setCursor(0, 3);
@@ -275,7 +296,8 @@ void loop() {
                     } else {
                         lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("   "); 
                     }
-                    lcd.print("Sig:"); lcd.print(modem.getSignalQuality()); lcd.print("  ");
+                    // Replaced Signal output with AQI output
+                    lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
 
                     // --- Compile Structured JSON Payload for Telegraf & Grafana ---
                     if (mqtt.connected()) {
@@ -287,6 +309,7 @@ void loop() {
                         doc["lat"]  = lat;
                         doc["lon"]  = lon;
                         doc["time"] = netTime; 
+                        doc["aqi"]  = currentAQI; // Appended AQI to MQTT payload
                         
                         char jb[128]; 
                         serializeJson(doc, jb);
