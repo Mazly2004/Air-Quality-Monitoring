@@ -10,11 +10,10 @@
 // --- Configuration ---
 const char apn[] = "internet.netone";
 
-// BROKER: EMQX Public Broker 
+// BROKER: EMQX Public Broker (Consider migrating to private for production)
 const char* mqtt_server = "broker.emqx.io"; 
 const int mqtt_port = 1883;
-
-const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; // Unique topic for your Telegraf stack
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -35,15 +34,19 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 // --- Global Telemetry Data ---
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
-float temp = 0.0, hum = 0.0, lat = 0.0, lon = 0.0;
-String gpsTime = "Searching...";
+float temp = 0.0, hum = 0.0;
+
+// Hardcoded coordinates for Budiriro, Harare
+const float lat = -17.8700;
+const float lon = 30.9000;
+
+String netTime = "Syncing..."; 
 
 // --- Timers ---
 unsigned long lastRequest = 0;
 unsigned long lastReconnectAttempt = 0; 
 unsigned long lastGprsAttempt = 0;
 unsigned long lastTimeSync = 0;
-bool gpsLocked = false;
 uint8_t dataBuf[26];
 
 // --- Smart Adaptive Power-On Logic ---
@@ -108,24 +111,32 @@ void powerModemResilient() {
     Serial.println("[Power] WARNING: Physical lines unresponsive. Check 18650 lipo cell.");
 }
 
-void updateGPS() {
-    float g_lat = 0, g_lon = 0, g_speed = 0, g_alt = 0, g_accuracy = 0;
-    int g_vsat = 0, g_usat = 0;
-    int g_y = 0, g_m = 0, g_d = 0, g_h = 0, g_min = 0, g_s = 0;
+// --- Time Sync Logic ---
+void syncNTP() {
+    Serial.println("[Time] Syncing modem RTC with NTP Server...");
+    // 8 quarters of an hour = UTC+2 (Central Africa Time)
+    modem.sendAT("+CNTP=\"pool.ntp.org\",8"); 
+    modem.waitResponse();
+    
+    modem.sendAT("+CNTP"); // Execute the network time sync
+    modem.waitResponse(10000); // Give it up to 10 seconds to fetch the time
+}
 
-    if (modem.getGPS(&g_lat, &g_lon, &g_speed, &g_alt, &g_vsat, &g_usat, &g_accuracy, &g_y, &g_m, &g_d, &g_h, &g_min, &g_s)) {
-        if (g_lat != 0.0 && g_lon != 0.0) {
-            lat = g_lat; 
-            lon = g_lon;
-            gpsLocked = true;
-        }
+void updateNetworkTime() {
+    modem.sendAT("+CCLK?");
+    if (modem.waitResponse(2000, "+CCLK: ") == 1) {
+        String res = modem.stream.readStringUntil('\n');
+        res.trim();
         
-        // Convert UTC to Central Africa Time (CAT) / UTC+2
-        int local_h = (g_h + 2) % 24;
-
-        char tBuf[16];
-        snprintf(tBuf, sizeof(tBuf), "%02d:%02d:%02d", local_h, g_min, g_s);
-        gpsTime = String(tBuf);
+        // The modem returns time in format: "YY/MM/DD,HH:MM:SS+TZ"
+        // We want to extract just the "HH:MM:SS" part
+        int commaIndex = res.indexOf(',');
+        int tzIndex = res.indexOf('+', commaIndex);
+        if (tzIndex == -1) tzIndex = res.indexOf('-', commaIndex); 
+        
+        if (commaIndex != -1 && tzIndex != -1) {
+            netTime = res.substring(commaIndex + 1, tzIndex);
+        }
     }
 }
 
@@ -144,6 +155,7 @@ void setup() {
     Serial.begin(115200);
     SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); 
     SerialSensor.begin(9600, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
+    SerialSensor.setTimeout(100); // 100ms timeout for sensor reading
 
     // 2. Local Visuals Setup
     Wire.begin(I2C_SDA, I2C_SCL);
@@ -165,10 +177,10 @@ void setup() {
         }
     }
 
-    // --- CRITICAL FIX: FORCE 2G/GPRS MODE FOR NETONE ---
+    // Force 2G/GPRS Mode
     Serial.println("[Network] Forcing Modem to 2G/GSM Mode...");
     modem.setNetworkMode(13); // 13 = GSM/2G Only. 38 = LTE-M/NB-IoT. 2 = Auto.
-    delay(3000); // Give the modem time to negotiate with the local cell tower
+    delay(3000); 
 
     // 4. Attach Cellular Data Network
     lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
@@ -178,11 +190,12 @@ void setup() {
         Serial.println("[Network] Cellular data attached successfully.");
     }
 
-    modem.sendAT("+CGNSPWR=1"); // Keep GNSS chip hot
+    // Sync Cellular NTP Time
+    syncNTP();
     
     // 5. MQTT Setup
     mqtt.setServer(mqtt_server, mqtt_port); 
-    mqtt.setSocketTimeout(30); // Give GPRS 30 full seconds to perform TCP handshake
+    mqtt.setSocketTimeout(30); 
 }
 
 void loop() {
@@ -200,7 +213,6 @@ void loop() {
             lastReconnectAttempt = millis();
             Serial.print("[MQTT] Routing packets to public cloud broker... ");
             
-            // Replaced String concatenation with memory-safe character array 
             char clientId[32];
             snprintf(clientId, sizeof(clientId), "NetOneNode_%04lX", random(0xffff));
             
@@ -222,8 +234,9 @@ void loop() {
         byte cmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
         SerialSensor.write(cmd, 9);
         
-        if (!gpsLocked || (millis() - lastTimeSync > 60000)) {
-            updateGPS();
+        // Fetch the cellular time every 60 seconds
+        if (millis() - lastTimeSync > 60000) {
+            updateNetworkTime();
             lastTimeSync = millis();
         }
     }
@@ -253,7 +266,7 @@ void loop() {
                     lcd.setCursor(0, 1);
                     lcd.print("PM2.5:"); lcd.print(pm25); lcd.print(" CO2:"); lcd.print(co2); lcd.print("  ");
                     lcd.setCursor(0, 2);
-                    lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(gpsTime);
+                    lcd.print("Lat:"); lcd.print(lat, 4); lcd.print(" "); lcd.print(netTime);
                     
                     // Smart Diagnostic LCD Output
                     lcd.setCursor(0, 3);
@@ -273,6 +286,7 @@ void loop() {
                         doc["hum"]  = hum;  
                         doc["lat"]  = lat;
                         doc["lon"]  = lon;
+                        doc["time"] = netTime; 
                         
                         char jb[128]; 
                         serializeJson(doc, jb);
