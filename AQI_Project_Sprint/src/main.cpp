@@ -10,9 +10,11 @@
 // --- Configuration ---
 const char apn[] = "internet.netone";
 
-// BROKER: EMQX Public Broker (Consider migrating to private for production)
-const char* mqtt_server = "broker.emqx.io"; 
-const int mqtt_port = 1883;
+// BROKER: Private EMQX Serverless Cluster (Upgraded for production security)
+const char* mqtt_server = "ya4f6956.ala.eu-central-1.emqxsl.com"; 
+const int mqtt_port = 8883; // Serverless strictly mandates secure TLS port 8883
+const char* mqtt_user = "harare_esp32_client"; 
+const char* mqtt_pass = "Langton@emqx$#"; 
 const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
@@ -28,7 +30,9 @@ const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data";
 HardwareSerial SerialAT(1);      // SIM7000G Cellular Core
 HardwareSerial SerialSensor(2);  // ZPHS01B Air Quality Sensor
 TinyGsm modem(SerialAT);
-TinyGsmClient cellularClient(modem);
+
+// Upgraded to Secure Client for encrypted MQTTS connections
+TinyGsmClientSecure cellularClient(modem);
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
@@ -226,21 +230,22 @@ void loop() {
             modem.gprsConnect(apn);
         }
     } 
-    // --- Safe, Collision-Proof MQTT Connection Sequence ---
+    // --- Safe, Secure MQTT Connection Sequence ---
     else if (!mqtt.connected()) {
         if (millis() - lastReconnectAttempt > 10000) {
             lastReconnectAttempt = millis();
-            Serial.print("[MQTT] Routing packets to public cloud broker... ");
+            Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
             snprintf(clientId, sizeof(clientId), "NetOneNode_%04lX", random(0xffff));
             
-            if (mqtt.connect(clientId)) {
+            // Authenticate with secure tokens
+            if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
             } else {
                 Serial.print("FAILED, Error State rc=");
                 Serial.print(mqtt.state()); 
-                Serial.println(" (Check airtime credit or telco tower data blocking)");
+                Serial.println(" (Check credentials or cluster Access Control settings)");
             }
         }
     } else {
@@ -263,7 +268,7 @@ void loop() {
     // --- High-Performance Sensor Buffer Parser ---
     while (SerialSensor.available() > 0) {
         if (SerialSensor.peek() != 0xFF) {
-            SerialSensor.read(); // Drop stray asynchronous framing debris
+            SerialSensor.read(); // Drop stray debris
             continue;
         }
 
@@ -279,17 +284,17 @@ void loop() {
                     temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
                     hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
 
-                    // --- NEW PARSING: Extract remaining pollutants from protocol frame ---
+                    // Extra parsed pollutants
                     pm10        = (uint16_t)dataBuf[6] << 8 | dataBuf[7];
-                    uint8_t tvoc_grade = dataBuf[10]; // VOC Grade (0 to 3)
-                    float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; // Formaldehyde mg/m3
-                    float co    = ((uint16_t)dataBuf[17] << 8 | dataBuf[18]) * 0.1f;   // Carbon Monoxide ppm
-                    float o3    = ((uint16_t)dataBuf[19] << 8 | dataBuf[20]) * 0.01f;  // Ozone ppm
-                    float no2   = ((uint16_t)dataBuf[21] << 8 | dataBuf[22]) * 0.01f;  // Nitrogen Dioxide ppm
+                    uint8_t tvoc_grade = dataBuf[10]; 
+                    float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; 
+                    float co    = ((uint16_t)dataBuf[17] << 8 | dataBuf[18]) * 0.1f;   
+                    float o3    = ((uint16_t)dataBuf[19] << 8 | dataBuf[20]) * 0.01f;  
+                    float no2   = ((uint16_t)dataBuf[21] << 8 | dataBuf[22]) * 0.01f;  
 
                     int currentAQI = calculateAQI(pm25);
 
-                    // --- Print Updates to Local LCD Matrix (UNCHANGED) ---
+                    // --- Print Updates to Local LCD Matrix ---
                     lcd.setCursor(0, 0);
                     lcd.print("TEMP:"); lcd.print(temp, 1); lcd.print("C HUM:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
@@ -297,7 +302,6 @@ void loop() {
                     lcd.setCursor(0, 2);
                     lcd.print("TIME: "); lcd.print(netTime);
                     
-                    // Smart Diagnostic LCD Output
                     lcd.setCursor(0, 3);
                     if (mqtt.connected()) {
                         lcd.print("MQTT:OK ");
@@ -306,7 +310,7 @@ void loop() {
                     }
                     lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
 
-                    // --- Compile Structured JSON Payload for Telegraf & Grafana ---
+                    // --- Compile Structured JSON Payload for Cloud Ecosystem ---
                     if (mqtt.connected()) {
                         JsonDocument doc;
                         doc["pm25"] = pm25;
@@ -318,7 +322,6 @@ void loop() {
                         doc["time"] = netTime; 
                         doc["aqi"]  = currentAQI; 
                         
-                        // --- APPENDED POLLUTANTS FOR CLOUD TELEMETRY ---
                         doc["pm10"] = pm10;
                         doc["tvoc"] = tvoc_grade;
                         doc["ch2o"] = ch2o;
@@ -326,14 +329,13 @@ void loop() {
                         doc["o3"]   = o3;
                         doc["no2"]  = no2;
                         
-                        // Expanded buffer size to 384 bytes to guarantee no key-value truncation
                         char jb[384]; 
                         serializeJson(doc, jb);
                         
                         if (mqtt.publish(mqtt_topic, jb)) {
-                            Serial.println("[MQTT] Complete telemetry payload safely dispatched.");
+                            Serial.println("[MQTT] Telemetry safely dispatched over TLS.");
                         } else {
-                            Serial.println("[MQTT] Warning: Packet dropped at transmission interface.");
+                            Serial.println("[MQTT] Warning: Packet dropped at network interface.");
                         }
                     }
                 } else {
