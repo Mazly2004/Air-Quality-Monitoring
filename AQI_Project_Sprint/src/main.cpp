@@ -63,7 +63,7 @@ void powerModemResilient() {
             String response = SerialAT.readString();
             if (response.indexOf("OK") != -1) {
                 Serial.println("[Power] Modem is already online! Safe-skipping toggle sequence.");
-                lcd.setCursor(0, 1); lcd.print("Modem: Already ON   ");
+                lcd.setCursor(0, 1); lcd.print("Modem: Already ON    ");
                 return;
             }
         }
@@ -279,9 +279,17 @@ void loop() {
                     temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
                     hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
 
+                    // --- NEW PARSING: Extract remaining pollutants from protocol frame ---
+                    pm10        = (uint16_t)dataBuf[6] << 8 | dataBuf[7];
+                    uint8_t tvoc_grade = dataBuf[10]; // VOC Grade (0 to 3)
+                    float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; // Formaldehyde mg/m3
+                    float co    = ((uint16_t)dataBuf[17] << 8 | dataBuf[18]) * 0.1f;   // Carbon Monoxide ppm
+                    float o3    = ((uint16_t)dataBuf[19] << 8 | dataBuf[20]) * 0.01f;  // Ozone ppm
+                    float no2   = ((uint16_t)dataBuf[21] << 8 | dataBuf[22]) * 0.01f;  // Nitrogen Dioxide ppm
+
                     int currentAQI = calculateAQI(pm25);
 
-                    // --- Print Updates to Local LCD Matrix ---
+                    // --- Print Updates to Local LCD Matrix (UNCHANGED) ---
                     lcd.setCursor(0, 0);
                     lcd.print("TEMP:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
@@ -296,7 +304,6 @@ void loop() {
                     } else {
                         lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("   "); 
                     }
-                    // Replaced Signal output with AQI output
                     lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
 
                     // --- Compile Structured JSON Payload for Telegraf & Grafana ---
@@ -309,13 +316,22 @@ void loop() {
                         doc["lat"]  = lat;
                         doc["lon"]  = lon;
                         doc["time"] = netTime; 
-                        doc["aqi"]  = currentAQI; // Appended AQI to MQTT payload
+                        doc["aqi"]  = currentAQI; 
                         
-                        char jb[128]; 
+                        // --- APPENDED POLLUTANTS FOR CLOUD TELEMETRY ---
+                        doc["pm10"] = pm10;
+                        doc["tvoc"] = tvoc_grade;
+                        doc["ch2o"] = ch2o;
+                        doc["co"]   = co;
+                        doc["o3"]   = o3;
+                        doc["no2"]  = no2;
+                        
+                        // Expanded buffer size to 384 bytes to guarantee no key-value truncation
+                        char jb[384]; 
                         serializeJson(doc, jb);
                         
                         if (mqtt.publish(mqtt_topic, jb)) {
-                            Serial.println("[MQTT] Payload safely dispatched to cloud bridge.");
+                            Serial.println("[MQTT] Complete telemetry payload safely dispatched.");
                         } else {
                             Serial.println("[MQTT] Warning: Packet dropped at transmission interface.");
                         }
