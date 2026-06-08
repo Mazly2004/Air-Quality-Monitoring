@@ -179,7 +179,7 @@ void setup() {
     // 2. Local Visuals Setup
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
-    lcd.print("NETONE MOBILE IOT");
+    lcd.print("BUDIRIRO NODE ");
 
     // Seed randomness for distinct MQTT identification hashes
     randomSeed(analogRead(0));
@@ -291,7 +291,7 @@ void loop() {
 
                     // --- Print Updates to Local LCD Matrix (UNCHANGED) ---
                     lcd.setCursor(0, 0);
-                    lcd.print("TEMP:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
+                    lcd.print("TEMP:"); lcd.print(temp, 1); lcd.print("C HUM:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  ");lcd.print("PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
