@@ -1,8 +1,9 @@
-// #define TINY_GSM_MODEM_SIM7000 // Commented out to prevent PlatformIO redefinition warning
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+
+// 🌟 TINY_GSM_MODEM_SIM7000 is now globally defined in platformio.ini
+// This allows TinyGSM to cleanly load the secure TLS engine below!
 #include <TinyGsmClient.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -209,7 +210,7 @@ void setup() {
     lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
     Serial.println("[Network] Attaching to NetOne network...");
     if (modem.gprsConnect(apn)) {
-        lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE   ");
+        lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE    ");
         Serial.println("[Network] Cellular data attached successfully.");
     }
 
@@ -306,7 +307,7 @@ void loop() {
                     if (mqtt.connected()) {
                         lcd.print("MQTT:OK ");
                     } else {
-                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("   "); 
+                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("    "); 
                     }
                     lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
 
