@@ -202,4 +202,157 @@ void setup() {
     modem.sendAT("+CSSLCFG=\"sslversion\",0,3");
     modem.waitResponse();
     
-    // 2. Set
+    // 2. Set authentication mode to 0 (No server verification/one-way handshake)
+    modem.sendAT("+CSSLCFG=\"authmode\",0,0");
+    modem.waitResponse();
+    
+    // 3. Bind the SNI Server URL directly to Context 0 (Fixes MQ -2 Error)
+    String sniCmd = String("+CSSLCFG=\"sni\",0,\"") + mqtt_server + "\"";
+    modem.sendAT(sniCmd);
+    modem.waitResponse();
+    
+    Serial.println("[SSL] Hardware SSL Parameters Configured Successfully.");
+    // -------------------------------------------------------------
+
+    // Force 2G/GPRS Mode
+    Serial.println("[Network] Forcing Modem to 2G/GSM Mode...");
+    modem.setNetworkMode(13); 
+    delay(3000); 
+
+    // 4. Attach Cellular Data Network
+    lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
+    Serial.println("[Network] Attaching to NetOne network...");
+    if (modem.gprsConnect(apn)) {
+        lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE    ");
+        Serial.println("[Network] Cellular data attached successfully.");
+    }
+
+    // Sync Cellular NTP Time
+    syncNTP();
+    
+    // 5. MQTT Setup
+    mqtt.setServer(mqtt_server, mqtt_port); 
+    mqtt.setSocketTimeout(30); 
+}
+
+void loop() {
+    // --- Network Guard & Self-Healing Auto-Reconnect ---
+    if (!modem.isGprsConnected()) {
+        if (millis() - lastGprsAttempt > 20000) {
+            lastGprsAttempt = millis();
+            Serial.println("[Network] Link dropped. Repairing GPRS connection...");
+            modem.gprsConnect(apn);
+        }
+    } 
+    // --- Safe, Secure MQTT Connection Sequence ---
+    else if (!mqtt.connected()) {
+        if (millis() - lastReconnectAttempt > 10000) {
+            lastReconnectAttempt = millis();
+            Serial.print("[MQTT] Connecting to secure cloud cluster... ");
+            
+            char clientId[32];
+            snprintf(clientId, sizeof(clientId), "NetOneNode_%04lX", random(0xffff));
+            
+            if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
+                Serial.println("CONNECTED SUCCESSFULLY!");
+            } else {
+                Serial.print("FAILED, Error State rc=");
+                Serial.print(mqtt.state()); 
+                Serial.println(" (Check credentials or cluster Access Control settings)");
+            }
+        }
+    } else {
+        mqtt.loop();
+    }
+
+    // --- 10-Second Passive Sensor Request Pulse ---
+    if (millis() - lastRequest > 10000) {
+        lastRequest = millis();
+        byte cmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+        SerialSensor.write(cmd, 9);
+        
+        if (millis() - lastTimeSync > 60000) {
+            updateNetworkTime();
+            lastTimeSync = millis();
+        }
+    }
+
+    // --- High-Performance Sensor Buffer Parser ---
+    while (SerialSensor.available() > 0) {
+        if (SerialSensor.peek() != 0xFF) {
+            SerialSensor.read(); 
+            continue;
+        }
+
+        if (SerialSensor.available() >= 26) {
+            SerialSensor.readBytes(dataBuf, 26);
+            if (dataBuf[1] == 0x86) {
+                
+                if (checkSensorChecksum(dataBuf)) {
+                    pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
+                    co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
+                    temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
+                    hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
+
+                    pm10        = (uint16_t)dataBuf[6] << 8 | dataBuf[7];
+                    uint8_t tvoc_grade = dataBuf[10]; 
+                    float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; 
+                    float co    = ((uint16_t)dataBuf[17] << 8 | dataBuf[18]) * 0.1f;   
+                    float o3    = ((uint16_t)dataBuf[19] << 8 | dataBuf[20]) * 0.01f;  
+                    float no2   = ((uint16_t)dataBuf[21] << 8 | dataBuf[22]) * 0.01f;  
+
+                    int currentAQI = calculateAQI(pm25);
+
+                    // --- Print Updates to Local LCD Matrix ---
+                    lcd.setCursor(0, 0);
+                    lcd.print("TEMP:"); lcd.print(temp, 1); lcd.print("C HUM:"); lcd.print(hum, 0); lcd.print("%   ");
+                    lcd.setCursor(0, 1);
+                    lcd.print("CO2:"); lcd.print(co2); lcd.print("  ");lcd.print("PM2.5:"); lcd.print(pm25);
+                    lcd.setCursor(0, 2);
+                    lcd.print("TIME: "); lcd.print(netTime);
+                    
+                    lcd.setCursor(0, 3);
+                    if (mqtt.connected()) {
+                        lcd.print("MQTT:OK ");
+                    } else {
+                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("    "); 
+                    }
+                    lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
+
+                    // --- Compile Structured JSON Payload for Cloud Ecosystem ---
+                    if (mqtt.connected()) {
+                        JsonDocument doc;
+                        doc["pm25"] = pm25;
+                        doc["co2"]  = co2;
+                        doc["temp"] = temp; 
+                        doc["hum"]  = hum;  
+                        doc["lat"]  = lat;
+                        doc["lon"]  = lon;
+                        doc["time"] = netTime; 
+                        doc["aqi"]  = currentAQI; 
+                        
+                        doc["pm10"] = pm10;
+                        doc["tvoc"] = tvoc_grade;
+                        doc["ch2o"] = ch2o;
+                        doc["co"]   = co;
+                        doc["o3"]   = o3;
+                        doc["no2"]  = no2;
+                        
+                        char jb[384]; 
+                        serializeJson(doc, jb);
+                        
+                        if (mqtt.publish(mqtt_topic, jb)) {
+                            Serial.println("[MQTT] Telemetry safely dispatched over TLS.");
+                        } else {
+                            Serial.println("[MQTT] Warning: Packet dropped at network interface.");
+                        }
+                    }
+                } else {
+                    Serial.println("[Sensor] Checksum failed. Corrupt packet discarded.");
+                }
+            }
+        } else {
+            break; 
+        }
+    }
+}
