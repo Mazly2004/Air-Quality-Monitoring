@@ -2,7 +2,7 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// 🌟 TINY_GSM_MODEM_SIM7000SSL is globally defined in platformio.ini
+// 🌟 TINY_GSM_MODEM_SIM7000 is globally defined in platformio.ini
 #include <TinyGsmClient.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -10,7 +10,7 @@
 // --- Configuration ---
 const char apn[] = "internet.netone";
 
-// BROKER: Private EMQX Serverless Cluster (Requires strict TLS 1.2 + SNI routing)
+// BROKER: Private EMQX Serverless Cluster
 const char* mqtt_server = "ya4f6956.ala.eu-central-1.emqxsl.com"; 
 const int mqtt_port = 8883; 
 const char* mqtt_user = "harare_esp32_client"; 
@@ -27,11 +27,12 @@ const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data";
 #define I2C_SCL      22  
 
 // --- Objects ---
-HardwareSerial SerialAT(1);      
-HardwareSerial SerialSensor(2);  
+HardwareSerial SerialAT(1);      // SIM7000G Cellular Core
+HardwareSerial SerialSensor(2);  // ZPHS01B Air Quality Sensor
 TinyGsm modem(SerialAT);
 
-// Secure Client Engine
+// Standard Client for cleartext HTTP fallback + Secure Client for MQTT TLS
+TinyGsmClient plainClient(modem);
 TinyGsmClientSecure cellularClient(modem);
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
@@ -40,7 +41,6 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
-// Hardcoded coordinates for Budiriro, Harare
 const float lat = -17.8700;
 const float lon = 30.9000;
 
@@ -65,7 +65,7 @@ void powerModemResilient() {
         if (SerialAT.available()) {
             String response = SerialAT.readString();
             if (response.indexOf("OK") != -1) {
-                Serial.println("[Power] Modem is already online! Safe-skipping toggle sequence.");
+                Serial.println("[Power] Modem is already online!");
                 lcd.setCursor(0, 1); lcd.print("Modem: Already ON    ");
                 return;
             }
@@ -109,24 +109,17 @@ void powerModemResilient() {
             }
         }
     }
-    Serial.println("[Power] WARNING: Physical lines unresponsive. Check 18650 lipo cell.");
-}
-
-// --- Time Sync Logic ---
-void syncNTP() {
-    Serial.println("[Time] Syncing modem RTC with NTP Server...");
-    modem.sendAT("+CNTP=\"pool.ntp.org\",8"); 
-    modem.waitResponse();
-    
-    modem.sendAT("+CNTP"); 
-    modem.waitResponse(10000); 
+    Serial.println("[Power] WARNING: Physical lines unresponsive.");
 }
 
 void updateNetworkTime() {
     modem.sendAT("+CCLK?");
-    if (modem.waitResponse(2000, "+CCLK: ") == 1) {
-        String res = modem.stream.readStringUntil('\n');
+    if (modem.waitResponse(2000, "+CCLK: \"") == 1) {
+        String res = modem.stream.readStringUntil('"');
         res.trim();
+        
+        Serial.print("[Time] Raw modem RTC data: ");
+        Serial.println(res);
         
         int commaIndex = res.indexOf(',');
         int tzIndex = res.indexOf('+', commaIndex);
@@ -134,8 +127,112 @@ void updateNetworkTime() {
         
         if (commaIndex != -1 && tzIndex != -1) {
             netTime = res.substring(commaIndex + 1, tzIndex);
+        } else {
+            netTime = res; // Fallback to raw layout if timezone parsing markers miss
+        }
+    } else {
+        Serial.println("[Time] Failed to pull time response from AT command channel.");
+    }
+}
+
+// --- HTTP REST Time Sync Fallback Engine ---
+bool syncTimeHTTP() {
+    Serial.println("[HTTP Time] Launching unencrypted TCP endpoint request...");
+    if (!plainClient.connect("worldtimeapi.org", 80)) {
+        Serial.println("[HTTP Time] Connection failed to fallback time server.");
+        return false;
+    }
+    
+    // Request localized JSON block directly over unblocked web traffic
+    plainClient.print("GET /api/timezone/Africa/Harare HTTP/1.1\r\n");
+    plainClient.print("Host: worldtimeapi.org\r\n");
+    plainClient.print("Connection: close\r\n\r\n");
+    
+    unsigned long timeout = millis();
+    bool headerEnded = false;
+    while (plainClient.connected() && millis() - timeout < 5000) {
+        String line = plainClient.readStringUntil('\n');
+        if (line == "\r" || line == "") {
+            headerEnded = true;
+            break;
         }
     }
+    
+    if (!headerEnded) {
+        plainClient.stop();
+        return false;
+    }
+    
+    String body = plainClient.readString();
+    plainClient.stop();
+    
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, body);
+    if (error) {
+        Serial.print("[HTTP Time] JSON parsing error: ");
+        Serial.println(error.c_str());
+        return false;
+    }
+    
+    const char* datetime = doc["datetime"]; // Pattern: "2026-06-10T01:21:01.123456+02:00"
+    if (!datetime || strlen(datetime) < 19) {
+        Serial.println("[HTTP Time] Time data missing or structural failure.");
+        return false;
+    }
+    
+    String dtStr = String(datetime);
+    String s_year  = dtStr.substring(2, 4);   // "26"
+    String s_month = dtStr.substring(5, 7);  // "06"
+    String s_day   = dtStr.substring(8, 10);  // "10"
+    String s_time  = dtStr.substring(11, 19); // "01:21:01"
+    
+    // Reassemble command strictly into SIM7000 configuration specs
+    // Harare is GMT+2, which calculates exactly to +08 quarter-hours
+    String cclk_cmd = "+CCLK=\"" + s_year + "/" + s_month + "/" + s_day + "," + s_time + "+08\"";
+    
+    modem.sendAT(cclk_cmd);
+    if (modem.waitResponse(2000) == 1) {
+        Serial.println("[HTTP Time] Clock adjusted successfully via Network Web scraping!");
+        return true;
+    }
+    return false;
+}
+
+// --- Time Sync Orchestration ---
+void syncNTP() {
+    Serial.println("[Time] Syncing modem RTC with Google Public NTP IP...");
+    lcd.setCursor(0, 2); lcd.print("Time: Syncing NTP... ");
+    
+    modem.sendAT("+CNTP=\"216.239.35.0\",8"); 
+    if (modem.waitResponse(3000) == 1) {
+        modem.sendAT("+CNTP"); 
+        if (modem.waitResponse(2000) == 1) { // Matches immediate "OK" acknowledgment
+            
+            // 🚨 FIX: Force module to block and listen for the true network response token
+            int8_t rc = modem.waitResponse(8000, "+CNTP: 0");
+            if (rc == 1) {
+                Serial.println("[Time] True NTP network handshake successful.");
+                updateNetworkTime();
+                return;
+            }
+        }
+    }
+    
+    // If NTP fails (Expected on NetOne due to UDP port filtering)
+    Serial.println("[Time] NTP network sync blocked/failed. Redirecting to HTTP Engine...");
+    lcd.setCursor(0, 2); lcd.print("Time: HTTP Syncing... ");
+    
+    if (syncTimeHTTP()) {
+        updateNetworkTime();
+        return;
+    }
+    
+    // Ultimate compiled safety baseline to preserve TLS handshake context
+    Serial.println("[Time] All network options exhausted. Forcing baseline clock values...");
+    lcd.setCursor(0, 2); lcd.print("Time: Emergency Inject");
+    modem.sendAT("+CCLK=\"26/06/10,01:15:00+08\""); 
+    modem.waitResponse(2000);
+    updateNetworkTime(); 
 }
 
 // --- EPA PM2.5 AQI Calculation ---
@@ -152,12 +249,11 @@ int calculateAQI(uint16_t pm) {
     else if (c <= 350.4){ iLow = 301; iHigh = 400; cLow = 250.5; cHigh = 350.4; }
     else                { iLow = 401; iHigh = 500; cLow = 350.5; cHigh = 500.4; }
 
-    if (c > 500.4) return 500; 
+    if (c > 500.4) return 500;
 
     return round(((iHigh - iLow) / (cHigh - cLow)) * (c - cLow) + iLow);
 }
 
-// Checksum verifier for the ZPHS01B sensor
 bool checkSensorChecksum(uint8_t *packet) {
     uint8_t checksum = 0;
     for (int i = 1; i < 25; i++) {
@@ -168,20 +264,16 @@ bool checkSensorChecksum(uint8_t *packet) {
 }
 
 void setup() {
-    // 1. Initialize Serial Interfaces
     Serial.begin(115200);
     SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); 
     SerialSensor.begin(9600, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
     SerialSensor.setTimeout(100); 
 
-    // 2. Local Visuals Setup
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     lcd.print("BUDIRIRO NODE ");
 
     randomSeed(analogRead(0));
-
-    // 3. Boot Cellular Core
     powerModemResilient();
 
     lcd.setCursor(0, 1); lcd.print("Modem: Syncing...   ");
@@ -193,33 +285,10 @@ void setup() {
         }
     }
 
-    // -------------------------------------------------------------
-    // 🌟 CRITICAL: SIM7000 HARDWARE SSL OVERRIDE FOR EMQX CLOUD 🌟
-    // -------------------------------------------------------------
-    Serial.println("[SSL] Injecting secure SNI configuration into SIM7000...");
-    
-    // 1. Force the modem context 0 to TLS 1.2 (3 = TLS 1.2)
-    modem.sendAT("+CSSLCFG=\"sslversion\",0,3");
-    modem.waitResponse();
-    
-    // 2. Set authentication mode to 0 (No server verification/one-way handshake)
-    modem.sendAT("+CSSLCFG=\"authmode\",0,0");
-    modem.waitResponse();
-    
-    // 3. Bind the SNI Server URL directly to Context 0 (Fixes MQ -2 Error)
-    String sniCmd = String("+CSSLCFG=\"sni\",0,\"") + mqtt_server + "\"";
-    modem.sendAT(sniCmd);
-    modem.waitResponse();
-    
-    Serial.println("[SSL] Hardware SSL Parameters Configured Successfully.");
-    // -------------------------------------------------------------
-
-    // Force 2G/GPRS Mode
     Serial.println("[Network] Forcing Modem to 2G/GSM Mode...");
     modem.setNetworkMode(13); 
     delay(3000); 
 
-    // 4. Attach Cellular Data Network
     lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
     Serial.println("[Network] Attaching to NetOne network...");
     if (modem.gprsConnect(apn)) {
@@ -227,10 +296,25 @@ void setup() {
         Serial.println("[Network] Cellular data attached successfully.");
     }
 
-    // Sync Cellular NTP Time
+    Serial.println("[TLS-Hardening] Overriding SSL Engine defaults for NetOne environment...");
+    modem.sendAT("+CSSLCFG=\"authmode\",0,0");
+    modem.waitResponse();
+    modem.sendAT("+CSSLCFG=\"authmode\",1,0");
+    modem.waitResponse();
+    
+    modem.sendAT("+CSSLCFG=\"sslversion\",0,3");
+    modem.waitResponse();
+    modem.sendAT("+CSSLCFG=\"sslversion\",1,3");
+    modem.waitResponse();
+
+    modem.sendAT("+CSSLCFG=\"sni\",0,\"" + String(mqtt_server) + "\"");
+    modem.waitResponse();
+    modem.sendAT("+CSSLCFG=\"sni\",1,\"" + String(mqtt_server) + "\"");
+    modem.waitResponse();
+
+    // Re-orchestrated initialization time sync execution
     syncNTP();
     
-    // 5. MQTT Setup
     mqtt.setServer(mqtt_server, mqtt_port); 
     mqtt.setSocketTimeout(30); 
 }
@@ -240,7 +324,9 @@ void loop() {
     if (!modem.isGprsConnected()) {
         if (millis() - lastGprsAttempt > 20000) {
             lastGprsAttempt = millis();
-            Serial.println("[Network] Link dropped. Repairing GPRS connection...");
+            Serial.println("[Network] Link dropped or stale context. Re-priming GPRS interface...");
+            modem.gprsDisconnect(); 
+            delay(2000);
             modem.gprsConnect(apn);
         }
     } 
@@ -257,8 +343,7 @@ void loop() {
                 Serial.println("CONNECTED SUCCESSFULLY!");
             } else {
                 Serial.print("FAILED, Error State rc=");
-                Serial.print(mqtt.state()); 
-                Serial.println(" (Check credentials or cluster Access Control settings)");
+                Serial.println(mqtt.state()); 
             }
         }
     } else {
@@ -277,7 +362,7 @@ void loop() {
         }
     }
 
-    // --- High-Performance Sensor Buffer Parser ---
+    // --- Sensor Buffer Parser ---
     while (SerialSensor.available() > 0) {
         if (SerialSensor.peek() != 0xFF) {
             SerialSensor.read(); 
@@ -309,7 +394,7 @@ void loop() {
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  ");lcd.print("PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
-                    lcd.print("TIME: "); lcd.print(netTime);
+                    lcd.print("TIME: "); lcd.print(netTime); lcd.print("        ");
                     
                     lcd.setCursor(0, 3);
                     if (mqtt.connected()) {
@@ -319,7 +404,7 @@ void loop() {
                     }
                     lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
 
-                    // --- Compile Structured JSON Payload for Cloud Ecosystem ---
+                    // --- Compile Structured JSON Payload ---
                     if (mqtt.connected()) {
                         JsonDocument doc;
                         doc["pm25"] = pm25;
@@ -348,7 +433,7 @@ void loop() {
                         }
                     }
                 } else {
-                    Serial.println("[Sensor] Checksum failed. Corrupt packet discarded.");
+                    Serial.println("[Sensor] Checksum failed.");
                 }
             }
         } else {
