@@ -31,7 +31,7 @@ HardwareSerial SerialAT(1);      // SIM7000G Cellular Core
 HardwareSerial SerialSensor(2);  // ZPHS01B Air Quality Sensor
 TinyGsm modem(SerialAT);
 
-TinyGsmClient plainClient(modem);
+TinyGsmClient plainClient(modem);+-
 TinyGsmClientSecure cellularClient(modem);
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
