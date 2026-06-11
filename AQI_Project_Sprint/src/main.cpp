@@ -9,7 +9,7 @@
 #include <ArduinoJson.h>
 
 // --- Configuration ---
-const char apn[] = "internet.netone";
+const char apn[] = "econet.net";
 
 // BROKER: Private EMQX Serverless Cluster (Upgraded for production security)
 const char* mqtt_server = "ya4f6956.ala.eu-central-1.emqxsl.com"; 
