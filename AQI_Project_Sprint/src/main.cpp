@@ -17,8 +17,8 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
-// Distinct topic for the Mt. Pleasant Node
-const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data"; 
+// 🌟 UPDATED: Distinct topic for the Budiriro Node (esp32_02)
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -29,7 +29,7 @@ const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data";
 #define I2C_SDA      21  
 #define I2C_SCL      22  
 
-// 🌟 NEW: Built-in SD Card SPI Pins for LilyGo T-SIM7000G
+// Built-in SD Card SPI Pins for LilyGo T-SIM7000G
 #define SPI_SCK      14
 #define SPI_MISO     2
 #define SPI_MOSI     15
@@ -48,9 +48,9 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
-// Hardcoded coordinates for Mt. Pleasant, Harare
-const float lat = -17.7800;
-const float lon = 31.0500;
+// 🌟 UPDATED: Hardcoded coordinates for Budiriro, Harare
+const float lat = -17.8700;
+const float lon = 30.9000;
 
 char netTime[16] = "Syncing..."; 
 
@@ -176,9 +176,10 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    lcd.print("MT PLEASANT NODE");
+    // 🌟 UPDATED: LCD Header
+    lcd.print("BUDIRIRO NODE       ");
 
-    // 🌟 NEW: Initialize local SD Card Storage
+    // Initialize local SD Card Storage
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
     if (!SD.begin(SD_CS, SPI)) {
@@ -241,7 +242,8 @@ void loop() {
             Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
-            snprintf(clientId, sizeof(clientId), "MtPleasant_%04lX", random(0xffff));
+            // 🌟 UPDATED: Client ID for Budiriro Node
+            snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
@@ -312,7 +314,7 @@ void loop() {
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    // 🌟 NEW: Write telemetry matrix locally to SD card
+                    // Write telemetry matrix locally to SD card
                     File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                     if (dataFile) {
                         dataFile.print(msgIndex); dataFile.print(",");
