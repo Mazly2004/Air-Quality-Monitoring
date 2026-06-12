@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <SPI.h>
+#include <SD.h>
 
 #include <TinyGsmClient.h>
 #include <PubSubClient.h>
@@ -15,7 +17,7 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
-// 🌟 UPDATED: Distinct topic for the Mt. Pleasant Node
+// Distinct topic for the Mt. Pleasant Node
 const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
@@ -26,6 +28,12 @@ const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data";
 #define SENSOR_RX    32
 #define I2C_SDA      21  
 #define I2C_SCL      22  
+
+// 🌟 NEW: Built-in SD Card SPI Pins for LilyGo T-SIM7000G
+#define SPI_SCK      14
+#define SPI_MISO     2
+#define SPI_MOSI     15
+#define SD_CS        13
 
 // --- Objects ---
 HardwareSerial SerialAT(1);      
@@ -40,11 +48,14 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
-// 🌟 UPDATED: Hardcoded coordinates for Mt. Pleasant, Harare
+// Hardcoded coordinates for Mt. Pleasant, Harare
 const float lat = -17.7800;
 const float lon = 31.0500;
 
 char netTime[16] = "Syncing..."; 
+
+// Global Data Index Counter
+uint32_t msgIndex = 1;
 
 // --- Timers ---
 unsigned long lastRequest = 0;
@@ -52,6 +63,9 @@ unsigned long lastReconnectAttempt = 0;
 unsigned long lastGprsAttempt = 0;
 unsigned long lastTimeSync = 0;
 uint8_t dataBuf[26];
+
+// 5-Minute sampling interval in milliseconds
+const unsigned long SEND_INTERVAL = 300000UL; 
 
 bool isModemAwake() {
     for (int i = 0; i < 4; i++) {
@@ -162,8 +176,26 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    // 🌟 UPDATED: LCD Boot visual
     lcd.print("MT PLEASANT NODE");
+
+    // 🌟 NEW: Initialize local SD Card Storage
+    Serial.print("[System] Initializing SD Card...");
+    SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
+    if (!SD.begin(SD_CS, SPI)) {
+        Serial.println(" FAILED!");
+        lcd.setCursor(0, 1); lcd.print("SD Card FAILED!     ");
+        delay(2000);
+    } else {
+        Serial.println(" OK.");
+        // Create file and inject CSV headers if the file is fresh/empty
+        File dataFile = SD.open("/datalog.csv", FILE_APPEND);
+        if (dataFile) {
+            if (dataFile.size() == 0) {
+                dataFile.println("Index,Timestamp,AQI,PM2.5,PM10,CO2,TVOC_Grade,CH2O,CO,O3,NO2,Temp,Hum");
+            }
+            dataFile.close();
+        }
+    }
 
     randomSeed(analogRead(0));
 
@@ -222,7 +254,7 @@ void loop() {
         mqtt.loop();
     }
 
-    if (millis() - lastRequest > 10000) {
+    if (millis() - lastRequest > SEND_INTERVAL) {
         lastRequest = millis();
         
         while (SerialSensor.available()) {
@@ -272,14 +304,40 @@ void loop() {
                     
                     lcd.setCursor(0, 3);
                     if (mqtt.connected()) {
-                        lcd.print("MQTT:OK ");
+                        lcd.print("MQ:OK ");
                     } else {
-                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print("    "); 
+                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print(" "); 
                     }
-                    lcd.print("AQI:"); lcd.print(currentAQI); lcd.print("   ");
+                    
+                    lcd.print("AQI:"); lcd.print(currentAQI); 
+                    lcd.print(" #"); lcd.print(msgIndex);
+
+                    // 🌟 NEW: Write telemetry matrix locally to SD card
+                    File dataFile = SD.open("/datalog.csv", FILE_APPEND);
+                    if (dataFile) {
+                        dataFile.print(msgIndex); dataFile.print(",");
+                        dataFile.print(netTime); dataFile.print(",");
+                        dataFile.print(currentAQI); dataFile.print(",");
+                        dataFile.print(pm25); dataFile.print(",");
+                        dataFile.print(pm10); dataFile.print(",");
+                        dataFile.print(co2); dataFile.print(",");
+                        dataFile.print(tvoc_grade); dataFile.print(",");
+                        dataFile.print(ch2o, 3); dataFile.print(",");
+                        dataFile.print(co, 1); dataFile.print(",");
+                        dataFile.print(o3, 2); dataFile.print(",");
+                        dataFile.print(no2, 2); dataFile.print(",");
+                        dataFile.print(temp, 1); dataFile.print(",");
+                        dataFile.println(hum, 0);
+                        dataFile.close();
+                        Serial.println("[SD] Row appended to datalog.csv");
+                    } else {
+                        Serial.println("[SD] Warning: Failed to open datalog.csv");
+                    }
 
                     if (mqtt.connected()) {
                         JsonDocument doc;
+                        
+                        doc["msg_idx"] = msgIndex; 
                         doc["pm25"] = pm25;
                         doc["co2"]  = co2;
                         doc["temp"] = temp; 
@@ -288,7 +346,6 @@ void loop() {
                         doc["lon"]  = lon;
                         doc["time"] = netTime; 
                         doc["aqi"]  = currentAQI; 
-                        
                         doc["pm10"] = pm10;
                         doc["tvoc"] = tvoc_grade;
                         doc["ch2o"] = ch2o;
@@ -300,8 +357,16 @@ void loop() {
                         serializeJson(doc, jb);
                         
                         if (mqtt.publish(mqtt_topic, jb)) {
-                            Serial.println("[MQTT] Mt. Pleasant Telemetry Dispatched.");
+                            Serial.print("[MQTT] Telemetry Dispatched. Index: ");
+                            Serial.println(msgIndex);
+                            
+                            msgIndex++; 
                         }
+                    } else {
+                        // If offline, still advance the index so the CSV and future MQTT drops match chronologically
+                        Serial.print("[MQTT] Device Offline. Local save successful. Index: ");
+                        Serial.println(msgIndex);
+                        msgIndex++; 
                     }
                 }
             }
