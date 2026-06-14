@@ -1,3 +1,6 @@
+// --- Modem Definition ---
+#define TINY_GSM_MODEM_SIM7000 // MUST BE DEFINED BEFORE INCLUDES
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
