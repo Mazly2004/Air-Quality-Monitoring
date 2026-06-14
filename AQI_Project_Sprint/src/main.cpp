@@ -1,44 +1,57 @@
 #include <Arduino.h>
-#include <WiFi.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <SPI.h>
+#include <SD.h>
+
+#include <TinyGsmClient.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <ThreeWire.h>  
-#include <RtcDS1302.h>
-#include <TFT_eSPI.h> 
 
-// --- Network & MQTT Credentials ---
-const char* ssid = "DT01";
-const char* password = "edwinatonde";
-const char* mqtt_server = "10.26.234.148"; 
-const int mqtt_port = 1883;
-const char* mqtt_topic = "sensors/indoor/esp32_02";
+// --- Configuration ---
+const char apn[] = "econet.net";
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+// BROKER: Private EMQX Serverless Cluster 
+const char* mqtt_server = "ya4f6956.ala.eu-central-1.emqxsl.com"; 
+const int mqtt_port = 8883; 
+const char* mqtt_user = "harare_esp32_client"; 
+const char* mqtt_pass = "Langton@emqx$#"; 
 
-// --- Hardware Setup --
-TFT_eSPI tft = TFT_eSPI(); 
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
-#define RX_PIN 16
-#define TX_PIN 17
+// --- Pinout (LilyGo T-SIM7000G) ---
+#define MODEM_TX     27
+#define MODEM_RX     26
+#define MODEM_PWR    4   
+#define SENSOR_TX    33
+#define SENSOR_RX    32
+#define I2C_SDA      21  
+#define I2C_SCL      22  
 
-#define RTC_DAT_PIN 27
-#define RTC_CLK_PIN 26
-#define RTC_RST_PIN 14
+// Built-in SD Card SPI Pins for LilyGo T-SIM7000G
+#define SPI_SCK      14
+#define SPI_MISO     2
+#define SPI_MOSI     15
+#define SD_CS        13
 
-ThreeWire myWire(RTC_DAT_PIN, RTC_CLK_PIN, RTC_RST_PIN); 
-RtcDS1302<ThreeWire> Rtc(myWire);
+// --- Objects ---
+HardwareSerial SerialAT(1);      
+HardwareSerial SerialSensor(2);  
+TinyGsm modem(SerialAT);
 
-// --- Sensor Variables & Buffers ---
-const byte requestCmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
-uint8_t dataBuffer[26];
-int bufferIndex = 0;
-unsigned long lastRequest = 0;
-const unsigned long requestInterval = 10000;
+TinyGsmClientSecure cellularClient(modem);
+PubSubClient mqtt(cellularClient);
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-uint16_t pm1_0, pm2_5, pm10, co2;
-uint8_t voc;
-float temp, hum, ch2o, co, o3, no2;
+// --- Global Telemetry Data ---
+uint16_t pm25 = 0, co2 = 0, pm10 = 0;
+float temp = 0.0, hum = 0.0;
+
+const float lat = -17.8700;
+const float lon = 30.9000;
+
+char netTime[16] = "Syncing..."; 
+uint32_t msgIndex = 1;
 
 // --- EDGE AI & ANOMALY DETECTION ---
 const float LIMIT_PM25 = 15.0;  
@@ -48,19 +61,16 @@ int history_idx = 0;
 int readings_count = 0;
 const float MAD_THRESHOLD_MULTIPLIER = 3.0; 
 
-// --- ALGORITHMS ---
+// --- Timers ---
+unsigned long lastRequest = 0;
+unsigned long lastReconnectAttempt = 0; 
+unsigned long lastGprsAttempt = 0;
+unsigned long lastTimeSync = 0;
+uint8_t dataBuf[26];
 
-int calculate_AQI_PM25(float pm) {
-    if (pm < 0) return 0;
-    if (pm <= 12.0) return round(((50.0 - 0.0) / (12.0 - 0.0)) * (pm - 0.0) + 0.0);
-    if (pm <= 35.4) return round(((100.0 - 51.0) / (35.4 - 12.1)) * (pm - 12.1) + 51.0);
-    if (pm <= 55.4) return round(((150.0 - 101.0) / (55.4 - 35.5)) * (pm - 35.5) + 101.0);
-    if (pm <= 150.4) return round(((200.0 - 151.0) / (150.4 - 55.5)) * (pm - 55.5) + 151.0);
-    if (pm <= 250.4) return round(((300.0 - 201.0) / (250.4 - 150.5)) * (pm - 150.5) + 201.0);
-    if (pm <= 350.4) return round(((400.0 - 301.0) / (350.4 - 250.5)) * (pm - 250.5) + 301.0);
-    if (pm <= 500.4) return round(((500.0 - 401.0) / (500.4 - 350.5)) * (pm - 350.5) + 401.0);
-    return 500; 
-}
+const unsigned long SEND_INTERVAL = 300000UL; // 5-Minute sampling interval
+
+// --- ALGORITHMS ---
 
 int heaviside(float value, float limit) {
     return (value >= limit) ? 1 : 0;
@@ -69,8 +79,8 @@ int heaviside(float value, float limit) {
 float getMedian(float data[], int size) {
     float tempArray[size];
     memcpy(tempArray, data, size * sizeof(float));
-    for(int i=0; i<size-1; i++) {
-        for(int j=i+1; j<size; j++) {
+    for(int i = 0; i < size - 1; i++) {
+        for(int j = i + 1; j < size; j++) {
             if(tempArray[i] > tempArray[j]) {
                 float t = tempArray[i];
                 tempArray[i] = tempArray[j];
@@ -86,7 +96,7 @@ int calculateMadAnomaly(float newValue) {
     if (readings_count < WINDOW_SIZE) return 0;
     float median = getMedian(pm25_history, WINDOW_SIZE);
     float deviations[WINDOW_SIZE];
-    for(int i=0; i<WINDOW_SIZE; i++) {
+    for(int i = 0; i < WINDOW_SIZE; i++) {
         deviations[i] = abs(pm25_history[i] - median);
     }
     float mad = getMedian(deviations, WINDOW_SIZE);
@@ -95,171 +105,312 @@ int calculateMadAnomaly(float newValue) {
     return (current_deviation > (MAD_THRESHOLD_MULTIPLIER * mad)) ? 1 : 0;
 }
 
-// --- COMMS ---
+int calculateAQI(uint16_t pm) {
+    float c = (float)pm;
+    int iLow = 0, iHigh = 0;
+    float cLow = 0.0, cHigh = 0.0;
 
-void setup_wifi() {
-    tft.setCursor(10, 300);
-    tft.print("WiFi Connecting...");
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) {
-        delay(500);
-        Serial.print(".");
-    }
-    tft.fillRect(10, 300, 460, 20, TFT_BLACK);
-    tft.drawString("WiFi Connected", 10, 300, 2);
+    if (c <= 12.0)      { iLow = 0; iHigh = 50; cLow = 0.0; cHigh = 12.0; }
+    else if (c <= 35.4) { iLow = 51; iHigh = 100; cLow = 12.1; cHigh = 35.4; }
+    else if (c <= 55.4) { iLow = 101; iHigh = 150; cLow = 35.5; cHigh = 55.4; }
+    else if (c <= 150.4){ iLow = 151; iHigh = 200; cLow = 55.5; cHigh = 150.4; }
+    else if (c <= 250.4){ iLow = 201; iHigh = 300; cLow = 150.5; cHigh = 250.4; }
+    else if (c <= 350.4){ iLow = 301; iHigh = 400; cLow = 250.5; cHigh = 350.4; }
+    else                { iLow = 401; iHigh = 500; cLow = 350.5; cHigh = 500.4; }
+
+    if (c > 500.4) return 500; 
+    return round(((iHigh - iLow) / (cHigh - cLow)) * (c - cLow) + iLow);
 }
 
-void reconnect_mqtt() {
-    while (!client.connected()) {
-        if (client.connect("ESP32_AirQualityNode_02")) {
-            Serial.println("MQTT Connected");
-        } else {
-            delay(5000);
+// --- HARDWARE & NETWORK UTILS ---
+
+bool checkSensorChecksum(uint8_t *packet) {
+    uint8_t checksum = 0;
+    for (int i = 1; i < 25; i++) {
+        checksum += packet[i];
+    }
+    checksum = (~checksum) + 1;
+    return (checksum == packet[25]);
+}
+
+bool isModemAwake() {
+    for (int i = 0; i < 4; i++) {
+        if (modem.testAT(500)) return true;
+        delay(100);
+    }
+    return false;
+}
+
+void powerModemResilient() {
+    pinMode(MODEM_PWR, OUTPUT);
+    Serial.println("[Power] Interrogating modem state...");
+    lcd.setCursor(0, 1); lcd.print("Modem: Checking...  ");
+    
+    if (isModemAwake()) {
+        Serial.println("[Power] Modem is already online!");
+        lcd.setCursor(0, 1); lcd.print("Modem: Already ON    ");
+        return;
+    }
+
+    Serial.println("[Power] Launching Pulse Sequence A...");
+    lcd.setCursor(0, 1); lcd.print("Modem: Powering A...");
+    digitalWrite(MODEM_PWR, HIGH);
+    delay(300);
+    digitalWrite(MODEM_PWR, LOW);
+    delay(4000); 
+
+    if (isModemAwake()) return;
+
+    Serial.println("[Power] Launching Fallback Sequence B...");
+    lcd.setCursor(0, 1); lcd.print("Modem: Powering B...");
+    digitalWrite(MODEM_PWR, LOW);
+    delay(1000);
+    digitalWrite(MODEM_PWR, HIGH);
+    delay(4000); 
+    
+    if (isModemAwake()) return;
+    Serial.println("[Power] WARNING: Physical lines unresponsive.");
+}
+
+void syncNTP() {
+    Serial.println("[Time] Syncing modem RTC with NTP Server...");
+    modem.sendAT("+CNTP=\"pool.ntp.org\",8"); 
+    modem.waitResponse();
+    modem.sendAT("+CNTP"); 
+    modem.waitResponse(10000); 
+}
+
+void updateNetworkTime() {
+    modem.sendAT("+CCLK?");
+    if (modem.waitResponse(2000, "+CCLK: ") == 1) {
+        char res[64];
+        size_t len = modem.stream.readBytesUntil('\n', res, sizeof(res) - 1);
+        res[len] = '\0'; 
+        
+        char* commaIndex = strchr(res, ',');
+        if (commaIndex != nullptr) {
+            char* tzIndex = strchr(commaIndex, '+');
+            if (!tzIndex) tzIndex = strchr(commaIndex, '-'); 
+            
+            if (tzIndex != nullptr) {
+                *tzIndex = '\0'; 
+                strlcpy(netTime, commaIndex + 1, sizeof(netTime)); 
+            }
         }
     }
 }
 
-void requestSensorData() {
-    Serial2.write(requestCmd, 9);
-}
-
-bool parseZPHS01B() {
-    if (dataBuffer[0] != 0xFF || dataBuffer[1] != 0x86) return false;
-    uint8_t checksum = 0;
-    for (int i = 1; i <= 24; i++) checksum += dataBuffer[i];
-    checksum = (~checksum) + 1;
-    if (checksum != dataBuffer[25]) return false;
-
-    pm1_0 = (uint16_t)dataBuffer[2] << 8 | dataBuffer[3];   
-    pm2_5 = (uint16_t)dataBuffer[4] << 8 | dataBuffer[5];   
-    pm10  = (uint16_t)dataBuffer[6] << 8 | dataBuffer[7];   
-    co2   = (uint16_t)dataBuffer[8] << 8 | dataBuffer[9];   
-    voc   = dataBuffer[10];                                 
-    
-    uint16_t rawTempU = (uint16_t)dataBuffer[11] << 8 | dataBuffer[12];
-    temp = (rawTempU - 500.0f) * 0.1f;
-    hum = (float)((uint16_t)dataBuffer[13] << 8 | dataBuffer[14]);
-    ch2o = ((uint16_t)dataBuffer[15] << 8 | dataBuffer[16]) * 0.001f;  
-    co   = ((uint16_t)dataBuffer[17] << 8 | dataBuffer[18]) * 0.1f;    
-    o3   = ((uint16_t)dataBuffer[19] << 8 | dataBuffer[20]) * 0.01f;   
-    no2  = ((uint16_t)dataBuffer[21] << 8 | dataBuffer[22]) * 0.01f;   
-    return true;
-}
-
-// --- MAIN SETUP ---
+// --- SETUP ---
 
 void setup() {
     Serial.begin(115200);
-    Serial2.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
-    
-    tft.init();
-    tft.setRotation(1); // Landscape
-    tft.fillScreen(TFT_BLACK);
-    
-    // Static Labels
-    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft.drawString("ENVIRONMENT DASHBOARD", 80, 5, 4);
-    tft.drawFastHLine(0, 35, 480, TFT_WHITE);
-    
-    tft.drawString("TEMP:", 20, 60, 4);
-    tft.drawString("HUMID:", 20, 110, 4);
-    tft.drawString("PM2.5:", 20, 160, 4);
-    tft.drawString("CO2:", 20, 210, 4);
-    
-    setup_wifi();
-    client.setServer(mqtt_server, mqtt_port);
-    
-    Rtc.Begin();
-    if (!Rtc.GetIsRunning()) Rtc.SetIsRunning(true);
-    
-    requestSensorData();
+    SerialAT.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX); 
+    SerialSensor.begin(9600, SERIAL_8N1, SENSOR_RX, SENSOR_TX);
+    SerialSensor.setTimeout(100); 
+
+    Wire.begin(I2C_SDA, I2C_SCL);
+    lcd.init(); lcd.backlight();
+    lcd.print("BUDIRIRO NODE       ");
+
+    // SD Card Init
+    Serial.print("[System] Initializing SD Card...");
+    SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
+    if (!SD.begin(SD_CS, SPI)) {
+        Serial.println(" FAILED!");
+        lcd.setCursor(0, 1); lcd.print("SD Card FAILED!     ");
+        delay(2000);
+    } else {
+        Serial.println(" OK.");
+        File dataFile = SD.open("/datalog.csv", FILE_APPEND);
+        if (dataFile) {
+            if (dataFile.size() == 0) {
+                // Updated headers with Anomaly Flags
+                dataFile.println("Index,Timestamp,AQI,PM2.5,PM10,CO2,TVOC_Grade,CH2O,CO,O3,NO2,Temp,Hum,MAD_Spike,WHO_Limit");
+            }
+            dataFile.close();
+        }
+    }
+
+    randomSeed(analogRead(0));
+    powerModemResilient();
+
+    lcd.setCursor(0, 1); lcd.print("Modem: Syncing...   ");
+    if (!modem.init()) { 
+        Serial.println("[System] Base init failed. Restarting ESP...");
+        lcd.setCursor(0, 2); lcd.print("ERROR: NO MODEM   ");
+        delay(3000);
+        ESP.restart(); // Replaces the while(true) loop
+    }
+
+    Serial.println("[Network] Forcing Modem to 2G/GSM Mode...");
+    modem.setNetworkMode(13); 
+    delay(3000); 
+
+    lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
+    if (modem.gprsConnect(apn)) {
+        lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE    ");
+    }
+
+    syncNTP();
+    mqtt.setServer(mqtt_server, mqtt_port); 
+    mqtt.setSocketTimeout(30); 
 }
 
 // --- MAIN LOOP ---
 
 void loop() {
-    if (!client.connected()) reconnect_mqtt();
-    client.loop();
-
-    if (millis() - lastRequest > requestInterval) {
-        requestSensorData();
-        lastRequest = millis();
+    if (!modem.isGprsConnected()) {
+        if (millis() - lastGprsAttempt > 20000) {
+            lastGprsAttempt = millis();
+            Serial.println("[Network] Link dropped. Repairing GPRS...");
+            modem.gprsConnect(apn);
+        }
+    } 
+    else if (!mqtt.connected()) {
+        if (millis() - lastReconnectAttempt > 10000) {
+            lastReconnectAttempt = millis();
+            Serial.print("[MQTT] Connecting... ");
+            
+            char clientId[32];
+            snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
+            
+            if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
+                Serial.println("CONNECTED!");
+            } else {
+                Serial.println("FAILED."); 
+            }
+        }
+    } else {
+        mqtt.loop();
     }
 
-    while (Serial2.available()) {
-        uint8_t b = Serial2.read();
-        if (bufferIndex == 0 && b != 0xFF) continue;
-        if (bufferIndex == 1 && b != 0x86) { bufferIndex = 0; continue; }
-        dataBuffer[bufferIndex++] = b;
+    if (millis() - lastRequest > SEND_INTERVAL) {
+        lastRequest = millis();
+        
+        while (SerialSensor.available()) {
+            SerialSensor.read();
+        }
 
-        if (bufferIndex == 26) {
-            bufferIndex = 0;
-            
-            if (parseZPHS01B()) {
-                // Algorithms
-                int mad_flag_pm25 = calculateMadAnomaly(pm2_5);
-                int h_flag_pm25 = heaviside(pm2_5, LIMIT_PM25);
-                int aqi_pm25 = calculate_AQI_PM25(pm2_5); 
+        byte cmd[] = {0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79};
+        SerialSensor.write(cmd, 9);
+        
+        if (millis() - lastTimeSync > 60000) {
+            updateNetworkTime();
+            lastTimeSync = millis();
+        }
+    }
 
-                pm25_history[history_idx] = pm2_5;
-                history_idx = (history_idx + 1) % WINDOW_SIZE;
-                if (readings_count < WINDOW_SIZE) readings_count++;
+    while (SerialSensor.available() > 0) {
+        if (SerialSensor.peek() != 0xFF) {
+            SerialSensor.read(); 
+            continue;
+        }
 
-                // MQTT - ArduinoJson v7
-                JsonDocument doc;
-                doc["pm25"] = pm2_5;
-                doc["pm10"] = pm10;
-                doc["co2"]  = co2;
-                doc["temp"] = temp;
-                doc["hum"]  = hum;
-                doc["pm25_aqi"] = (float)aqi_pm25;
-                doc["mad_spike_pm25"] = mad_flag_pm25;
-                doc["heaviside_pm25"] = h_flag_pm25;
-                doc["hcho"]= ch2o;
-                doc["co"]  = co;
-                doc["o3"]  = o3;
-                doc["no2"] = no2;
-                doc["tvoc"] = voc;
-                char jsonBuffer[512];
-                serializeJson(doc, jsonBuffer);
-                client.publish(mqtt_topic, jsonBuffer);
-
-                // UI Updates
-                tft.setTextColor(TFT_CYAN, TFT_BLACK);
-                char valBuf[20];
+        if (SerialSensor.available() >= 26) {
+            SerialSensor.readBytes(dataBuf, 26);
+            if (dataBuf[1] == 0x86) {
                 
-                snprintf(valBuf, sizeof(valBuf), "%.1f C  ", temp);
-                tft.drawString(valBuf, 180, 60, 4);
-                
-                snprintf(valBuf, sizeof(valBuf), "%.1f %%  ", hum);
-                tft.drawString(valBuf, 180, 110, 4);
-                
-                snprintf(valBuf, sizeof(valBuf), "%d ug/m3  ", pm2_5);
-                tft.drawString(valBuf, 180, 160, 4);
-                
-                snprintf(valBuf, sizeof(valBuf), "%d ppm  ", co2);
-                tft.drawString(valBuf, 180, 210, 4);
+                if (checkSensorChecksum(dataBuf)) {
+                    pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
+                    co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
+                    temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
+                    hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
+                    pm10        = (uint16_t)dataBuf[6] << 8 | dataBuf[7];
+                    uint8_t tvoc_grade = dataBuf[10]; 
+                    float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; 
+                    float co    = ((uint16_t)dataBuf[17] << 8 | dataBuf[18]) * 0.1f;   
+                    float o3    = ((uint16_t)dataBuf[19] << 8 | dataBuf[20]) * 0.01f;  
+                    float no2   = ((uint16_t)dataBuf[21] << 8 | dataBuf[22]) * 0.01f;  
 
-                // Time update
-                RtcDateTime now = Rtc.GetDateTime();
-                char timeBuf[15];
-                snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", now.Hour(), now.Minute(), now.Second());
-                tft.setTextColor(TFT_WHITE, TFT_BLACK);
-                tft.drawString(timeBuf, 340, 300, 2);
+                    int currentAQI = calculateAQI(pm25);
 
-                // Anomaly Area
-                tft.fillRect(10, 255, 460, 40, TFT_BLACK);
-                if(mad_flag_pm25) {
-                    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-                    tft.drawString("ALERT: PM2.5 SPIKE DETECTED!", 20, 260, 4);
-                } else if (h_flag_pm25) {
-                    tft.setTextColor(TFT_RED, TFT_BLACK);
-                    tft.drawString("DANGER: EXCEEDS WHO LIMIT!", 20, 260, 4);
-                } else {
-                    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-                    tft.drawString("AIR QUALITY: STABLE", 20, 260, 4);
+                    // Execute Anomaly Algorithms
+                    int mad_flag_pm25 = calculateMadAnomaly((float)pm25);
+                    int h_flag_pm25 = heaviside((float)pm25, LIMIT_PM25);
+
+                    // Update sliding window buffer
+                    pm25_history[history_idx] = (float)pm25;
+                    history_idx = (history_idx + 1) % WINDOW_SIZE;
+                    if (readings_count < WINDOW_SIZE) readings_count++;
+
+                    // UI Updates
+                    lcd.setCursor(0, 0);
+                    lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
+                    lcd.setCursor(0, 1);
+                    lcd.print("CO2:"); lcd.print(co2); lcd.print("  PM2.5:"); lcd.print(pm25);
+                    lcd.setCursor(0, 2);
+                    lcd.print("TIME: "); lcd.print(netTime);
+                    
+                    lcd.setCursor(0, 3);
+                    if (mqtt.connected()) lcd.print("MQ:OK ");
+                    else { lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print(" "); }
+                    
+                    lcd.print("AQI:"); lcd.print(currentAQI); 
+                    lcd.print(" #"); lcd.print(msgIndex);
+
+                    // Write telemetry locally to SD card
+                    File dataFile = SD.open("/datalog.csv", FILE_APPEND);
+                    if (dataFile) {
+                        dataFile.print(msgIndex); dataFile.print(",");
+                        dataFile.print(netTime); dataFile.print(",");
+                        dataFile.print(currentAQI); dataFile.print(",");
+                        dataFile.print(pm25); dataFile.print(",");
+                        dataFile.print(pm10); dataFile.print(",");
+                        dataFile.print(co2); dataFile.print(",");
+                        dataFile.print(tvoc_grade); dataFile.print(",");
+                        dataFile.print(ch2o, 3); dataFile.print(",");
+                        dataFile.print(co, 1); dataFile.print(",");
+                        dataFile.print(o3, 2); dataFile.print(",");
+                        dataFile.print(no2, 2); dataFile.print(",");
+                        dataFile.print(temp, 1); dataFile.print(",");
+                        dataFile.print(hum, 0); dataFile.print(",");
+                        
+                        // New Anomaly Flags Append
+                        dataFile.print(mad_flag_pm25); dataFile.print(",");
+                        dataFile.println(h_flag_pm25);
+                        
+                        dataFile.close();
+                        Serial.println("[SD] Row appended to datalog.csv");
+                    } else {
+                        Serial.println("[SD] Warning: Failed to open datalog.csv");
+                    }
+
+                    if (mqtt.connected()) {
+                        JsonDocument doc;
+                        doc["msg_idx"] = msgIndex; 
+                        doc["pm25"] = pm25;
+                        doc["co2"]  = co2;
+                        doc["temp"] = temp; 
+                        doc["hum"]  = hum;  
+                        doc["lat"]  = lat;
+                        doc["lon"]  = lon;
+                        doc["time"] = netTime; 
+                        doc["aqi"]  = currentAQI; 
+                        doc["pm10"] = pm10;
+                        doc["tvoc"] = tvoc_grade;
+                        doc["ch2o"] = ch2o;
+                        doc["co"]   = co;
+                        doc["o3"]   = o3;
+                        doc["no2"]  = no2;
+                        
+                        
+                        char jb[512]; 
+                        serializeJson(doc, jb);
+                        
+                        if (mqtt.publish(mqtt_topic, jb)) {
+                            Serial.print("[MQTT] Telemetry Dispatched. Index: ");
+                            Serial.println(msgIndex);
+                            msgIndex++; 
+                        }
+                    } else {
+                        Serial.print("[MQTT] Device Offline. Local save successful. Index: ");
+                        Serial.println(msgIndex);
+                        msgIndex++; 
+                    }
                 }
             }
+        } else {
+            break; 
         }
     }
 }
