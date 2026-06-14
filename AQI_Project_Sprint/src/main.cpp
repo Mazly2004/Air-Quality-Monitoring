@@ -50,7 +50,8 @@ float temp = 0.0, hum = 0.0;
 const float lat = -17.8700;
 const float lon = 30.9000;
 
-char netTime[16] = "Syncing..."; 
+// Expanded buffer to hold YY/MM/DD HH:MM:SS
+char netTime[24] = "Syncing..."; 
 uint32_t msgIndex = 1;
 
 // --- EDGE AI & ANOMALY DETECTION ---
@@ -187,16 +188,28 @@ void updateNetworkTime() {
         size_t len = modem.stream.readBytesUntil('\n', res, sizeof(res) - 1);
         res[len] = '\0'; 
         
-        char* commaIndex = strchr(res, ',');
-        if (commaIndex != nullptr) {
-            char* tzIndex = strchr(commaIndex, '+');
-            if (!tzIndex) tzIndex = strchr(commaIndex, '-'); 
-            
-            if (tzIndex != nullptr) {
-                *tzIndex = '\0'; 
-                strlcpy(netTime, commaIndex + 1, sizeof(netTime)); 
-            }
+        // Expected SIMCOM format: "YY/MM/DD,HH:MM:SS+TZ"
+        
+        char* start = strchr(res, '"'); // Find opening quote
+        if (start) {
+            start++; // Skip the quote
+        } else {
+            start = res; // Fallback if quotes are stripped by library
         }
+        
+        char* tzIndex = strchr(start, '+'); // Find timezone +
+        if (!tzIndex) tzIndex = strchr(start, '-'); // Or timezone -
+        
+        if (tzIndex != nullptr) {
+            *tzIndex = '\0'; // Cut off the timezone and closing quote
+        }
+        
+        char* commaIndex = strchr(start, ',');
+        if (commaIndex != nullptr) {
+            *commaIndex = ' '; // Replace the comma with a space -> YY/MM/DD HH:MM:SS
+        }
+        
+        strlcpy(netTime, start, sizeof(netTime)); 
     }
 }
 
@@ -339,7 +352,7 @@ void loop() {
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
-                    lcd.print("TIME: "); lcd.print(netTime);
+                    lcd.print("T: "); lcd.print(netTime); // Shortened "TIME:" to fit 20 chars
                     
                     lcd.setCursor(0, 3);
                     if (mqtt.connected()) lcd.print("MQ:OK ");
@@ -393,6 +406,7 @@ void loop() {
                         doc["o3"]   = o3;
                         doc["no2"]  = no2;
                         
+                       
                         
                         char jb[512]; 
                         serializeJson(doc, jb);
