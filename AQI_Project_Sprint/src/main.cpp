@@ -1,5 +1,5 @@
 // --- Modem Definition ---
-#define TINY_GSM_MODEM_SIM7000 // MUST BE DEFINED BEFORE INCLUDES
+#define TINY_GSM_MODEM_SIM7000 // Required by TinyGSM
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -20,6 +20,7 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
+// 🌟 Distinct topic for the Budiriro Node (esp32_02)
 const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
@@ -50,11 +51,14 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
+// 🌟 Hardcoded coordinates for Budiriro, Harare
 const float lat = -17.8700;
 const float lon = 30.9000;
 
-// Expanded buffer to hold YY/MM/DD HH:MM:SS
+// 🌟 UPDATED: Expanded buffer to hold full YY/MM/DD HH:MM:SS
 char netTime[24] = "Syncing..."; 
+
+// Global Data Index Counter
 uint32_t msgIndex = 1;
 
 // --- EDGE AI & ANOMALY DETECTION ---
@@ -72,7 +76,8 @@ unsigned long lastGprsAttempt = 0;
 unsigned long lastTimeSync = 0;
 uint8_t dataBuf[26];
 
-const unsigned long SEND_INTERVAL = 300000UL; // 5-Minute sampling interval
+// 5-Minute sampling interval in milliseconds
+const unsigned long SEND_INTERVAL = 300000UL; 
 
 // --- ALGORITHMS ---
 
@@ -123,19 +128,11 @@ int calculateAQI(uint16_t pm) {
     else                { iLow = 401; iHigh = 500; cLow = 350.5; cHigh = 500.4; }
 
     if (c > 500.4) return 500; 
+
     return round(((iHigh - iLow) / (cHigh - cLow)) * (c - cLow) + iLow);
 }
 
 // --- HARDWARE & NETWORK UTILS ---
-
-bool checkSensorChecksum(uint8_t *packet) {
-    uint8_t checksum = 0;
-    for (int i = 1; i < 25; i++) {
-        checksum += packet[i];
-    }
-    checksum = (~checksum) + 1;
-    return (checksum == packet[25]);
-}
 
 bool isModemAwake() {
     for (int i = 0; i < 4; i++) {
@@ -151,28 +148,34 @@ void powerModemResilient() {
     lcd.setCursor(0, 1); lcd.print("Modem: Checking...  ");
     
     if (isModemAwake()) {
-        Serial.println("[Power] Modem is already online!");
+        Serial.println("[Power] Modem is already online! Safe-skipping toggle sequence.");
         lcd.setCursor(0, 1); lcd.print("Modem: Already ON    ");
         return;
     }
 
-    Serial.println("[Power] Launching Pulse Sequence A...");
+    Serial.println("[Power] No response. Launching Pulse Sequence A...");
     lcd.setCursor(0, 1); lcd.print("Modem: Powering A...");
     digitalWrite(MODEM_PWR, HIGH);
     delay(300);
     digitalWrite(MODEM_PWR, LOW);
     delay(4000); 
 
-    if (isModemAwake()) return;
+    if (isModemAwake()) {
+        Serial.println("[Power] Hardware initialized via Sequence A.");
+        return;
+    }
 
-    Serial.println("[Power] Launching Fallback Sequence B...");
+    Serial.println("[Power] Still dark. Launching Fallback Sequence B...");
     lcd.setCursor(0, 1); lcd.print("Modem: Powering B...");
     digitalWrite(MODEM_PWR, LOW);
     delay(1000);
     digitalWrite(MODEM_PWR, HIGH);
     delay(4000); 
     
-    if (isModemAwake()) return;
+    if (isModemAwake()) {
+        Serial.println("[Power] Hardware initialized via Sequence B.");
+        return;
+    }
     Serial.println("[Power] WARNING: Physical lines unresponsive.");
 }
 
@@ -184,6 +187,7 @@ void syncNTP() {
     modem.waitResponse(10000); 
 }
 
+// 🌟 UPDATED: Full robust Date/Time parsing
 void updateNetworkTime() {
     modem.sendAT("+CCLK?");
     if (modem.waitResponse(2000, "+CCLK: ") == 1) {
@@ -192,12 +196,11 @@ void updateNetworkTime() {
         res[len] = '\0'; 
         
         // Expected SIMCOM format: "YY/MM/DD,HH:MM:SS+TZ"
-        
         char* start = strchr(res, '"'); // Find opening quote
         if (start) {
             start++; // Skip the quote
         } else {
-            start = res; // Fallback if quotes are stripped by library
+            start = res; // Fallback if quotes are stripped
         }
         
         char* tzIndex = strchr(start, '+'); // Find timezone +
@@ -216,7 +219,14 @@ void updateNetworkTime() {
     }
 }
 
-// --- SETUP ---
+bool checkSensorChecksum(uint8_t *packet) {
+    uint8_t checksum = 0;
+    for (int i = 1; i < 25; i++) {
+        checksum += packet[i];
+    }
+    checksum = (~checksum) + 1;
+    return (checksum == packet[25]);
+}
 
 void setup() {
     Serial.begin(115200);
@@ -226,9 +236,10 @@ void setup() {
 
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
+    
     lcd.print("BUDIRIRO NODE       ");
 
-    // SD Card Init
+    // Initialize local SD Card Storage
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
     if (!SD.begin(SD_CS, SPI)) {
@@ -237,10 +248,11 @@ void setup() {
         delay(2000);
     } else {
         Serial.println(" OK.");
+        // Create file and inject CSV headers if the file is fresh/empty
         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
         if (dataFile) {
             if (dataFile.size() == 0) {
-                // Updated headers with Anomaly Flags
+                // Appended Anomaly Header columns
                 dataFile.println("Index,Timestamp,AQI,PM2.5,PM10,CO2,TVOC_Grade,CH2O,CO,O3,NO2,Temp,Hum,MAD_Spike,WHO_Limit");
             }
             dataFile.close();
@@ -248,14 +260,16 @@ void setup() {
     }
 
     randomSeed(analogRead(0));
+
     powerModemResilient();
 
     lcd.setCursor(0, 1); lcd.print("Modem: Syncing...   ");
     if (!modem.init()) { 
-        Serial.println("[System] Base init failed. Restarting ESP...");
-        lcd.setCursor(0, 2); lcd.print("ERROR: NO MODEM   ");
-        delay(3000);
-        ESP.restart(); // Replaces the while(true) loop
+        Serial.println("[System] Base init failed.");
+        if (!modem.restart()) {
+            lcd.setCursor(0, 2); lcd.print("ERROR: NO MODEM   ");
+            while(true);
+        }
     }
 
     Serial.println("[Network] Forcing Modem to 2G/GSM Mode...");
@@ -263,16 +277,17 @@ void setup() {
     delay(3000); 
 
     lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
+    Serial.println("[Network] Attaching to Econet network...");
     if (modem.gprsConnect(apn)) {
         lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE    ");
+        Serial.println("[Network] Cellular data attached successfully.");
     }
 
     syncNTP();
+    
     mqtt.setServer(mqtt_server, mqtt_port); 
     mqtt.setSocketTimeout(30); 
 }
-
-// --- MAIN LOOP ---
 
 void loop() {
     if (!modem.isGprsConnected()) {
@@ -285,15 +300,17 @@ void loop() {
     else if (!mqtt.connected()) {
         if (millis() - lastReconnectAttempt > 10000) {
             lastReconnectAttempt = millis();
-            Serial.print("[MQTT] Connecting... ");
+            Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
+            // Client ID for Budiriro Node
             snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
-                Serial.println("CONNECTED!");
+                Serial.println("CONNECTED SUCCESSFULLY!");
             } else {
-                Serial.println("FAILED."); 
+                Serial.print("FAILED, rc=");
+                Serial.println(mqtt.state()); 
             }
         }
     } else {
@@ -331,6 +348,7 @@ void loop() {
                     co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
                     temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
                     hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
+
                     pm10        = (uint16_t)dataBuf[6] << 8 | dataBuf[7];
                     uint8_t tvoc_grade = dataBuf[10]; 
                     float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; 
@@ -349,22 +367,25 @@ void loop() {
                     history_idx = (history_idx + 1) % WINDOW_SIZE;
                     if (readings_count < WINDOW_SIZE) readings_count++;
 
-                    // UI Updates
                     lcd.setCursor(0, 0);
                     lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
-                    lcd.print("T: "); lcd.print(netTime); // Shortened "TIME:" to fit 20 chars
+                    // 🌟 Formatted to fit 20-char LCD: "T: " + 17 chars = 20
+                    lcd.print("T: "); lcd.print(netTime);
                     
                     lcd.setCursor(0, 3);
-                    if (mqtt.connected()) lcd.print("MQ:OK ");
-                    else { lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print(" "); }
+                    if (mqtt.connected()) {
+                        lcd.print("MQ:OK ");
+                    } else {
+                        lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print(" "); 
+                    }
                     
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    // Write telemetry locally to SD card
+                    // Write telemetry matrix locally to SD card
                     File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                     if (dataFile) {
                         dataFile.print(msgIndex); dataFile.print(",");
@@ -381,7 +402,7 @@ void loop() {
                         dataFile.print(temp, 1); dataFile.print(",");
                         dataFile.print(hum, 0); dataFile.print(",");
                         
-                        // New Anomaly Flags Append
+                        // Append Anomaly Flags to SD Card
                         dataFile.print(mad_flag_pm25); dataFile.print(",");
                         dataFile.println(h_flag_pm25);
                         
@@ -393,6 +414,7 @@ void loop() {
 
                     if (mqtt.connected()) {
                         JsonDocument doc;
+                        
                         doc["msg_idx"] = msgIndex; 
                         doc["pm25"] = pm25;
                         doc["co2"]  = co2;
@@ -408,18 +430,23 @@ void loop() {
                         doc["co"]   = co;
                         doc["o3"]   = o3;
                         doc["no2"]  = no2;
+
+                        // Add Anomaly Flags to Cloud Telemetry
+                        //doc["mad_spike_pm25"] = mad_flag_pm25;
+                        //doc["heaviside_pm25"] = h_flag_pm25;
                         
-                       
-                        
+                        // Buffer slightly increased to accommodate new variables
                         char jb[512]; 
                         serializeJson(doc, jb);
                         
                         if (mqtt.publish(mqtt_topic, jb)) {
                             Serial.print("[MQTT] Telemetry Dispatched. Index: ");
                             Serial.println(msgIndex);
+                            
                             msgIndex++; 
                         }
                     } else {
+                        // If offline, still advance the index so the CSV and future MQTT drops match chronologically
                         Serial.print("[MQTT] Device Offline. Local save successful. Index: ");
                         Serial.println(msgIndex);
                         msgIndex++; 
