@@ -1,6 +1,3 @@
-// --- Modem Definition ---
-#define TINY_GSM_MODEM_SIM7000 // Required by TinyGSM
-
 #include <Arduino.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
@@ -20,7 +17,7 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
-// 🌟 Distinct topic for the Budiriro Node (esp32_02)
+// Distinct topic for the Budiriro Node (esp32_02)
 const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
@@ -51,7 +48,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
-// 🌟 Hardcoded coordinates for Budiriro, Harare
+// Hardcoded coordinates for Budiriro, Harare
 const float lat = -17.8700;
 const float lon = 30.9000;
 
@@ -114,26 +111,6 @@ int calculateMadAnomaly(float newValue) {
     return (current_deviation > (MAD_THRESHOLD_MULTIPLIER * mad)) ? 1 : 0;
 }
 
-int calculateAQI(uint16_t pm) {
-    float c = (float)pm;
-    int iLow = 0, iHigh = 0;
-    float cLow = 0.0, cHigh = 0.0;
-
-    if (c <= 12.0)      { iLow = 0; iHigh = 50; cLow = 0.0; cHigh = 12.0; }
-    else if (c <= 35.4) { iLow = 51; iHigh = 100; cLow = 12.1; cHigh = 35.4; }
-    else if (c <= 55.4) { iLow = 101; iHigh = 150; cLow = 35.5; cHigh = 55.4; }
-    else if (c <= 150.4){ iLow = 151; iHigh = 200; cLow = 55.5; cHigh = 150.4; }
-    else if (c <= 250.4){ iLow = 201; iHigh = 300; cLow = 150.5; cHigh = 250.4; }
-    else if (c <= 350.4){ iLow = 301; iHigh = 400; cLow = 250.5; cHigh = 350.4; }
-    else                { iLow = 401; iHigh = 500; cLow = 350.5; cHigh = 500.4; }
-
-    if (c > 500.4) return 500; 
-
-    return round(((iHigh - iLow) / (cHigh - cLow)) * (c - cLow) + iLow);
-}
-
-// --- HARDWARE & NETWORK UTILS ---
-
 bool isModemAwake() {
     for (int i = 0; i < 4; i++) {
         if (modem.testAT(500)) return true;
@@ -187,7 +164,7 @@ void syncNTP() {
     modem.waitResponse(10000); 
 }
 
-// 🌟 UPDATED: Full robust Date/Time parsing
+// 🌟 UPDATED: Full Date/Time parsing
 void updateNetworkTime() {
     modem.sendAT("+CCLK?");
     if (modem.waitResponse(2000, "+CCLK: ") == 1) {
@@ -217,6 +194,24 @@ void updateNetworkTime() {
         
         strlcpy(netTime, start, sizeof(netTime)); 
     }
+}
+
+int calculateAQI(uint16_t pm) {
+    float c = (float)pm;
+    int iLow = 0, iHigh = 0;
+    float cLow = 0.0, cHigh = 0.0;
+
+    if (c <= 12.0)      { iLow = 0; iHigh = 50; cLow = 0.0; cHigh = 12.0; }
+    else if (c <= 35.4) { iLow = 51; iHigh = 100; cLow = 12.1; cHigh = 35.4; }
+    else if (c <= 55.4) { iLow = 101; iHigh = 150; cLow = 35.5; cHigh = 55.4; }
+    else if (c <= 150.4){ iLow = 151; iHigh = 200; cLow = 55.5; cHigh = 150.4; }
+    else if (c <= 250.4){ iLow = 201; iHigh = 300; cLow = 150.5; cHigh = 250.4; }
+    else if (c <= 350.4){ iLow = 301; iHigh = 400; cLow = 250.5; cHigh = 350.4; }
+    else                { iLow = 401; iHigh = 500; cLow = 350.5; cHigh = 500.4; }
+
+    if (c > 500.4) return 500; 
+
+    return round(((iHigh - iLow) / (cHigh - cLow)) * (c - cLow) + iLow);
 }
 
 bool checkSensorChecksum(uint8_t *packet) {
@@ -252,7 +247,7 @@ void setup() {
         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
         if (dataFile) {
             if (dataFile.size() == 0) {
-                // Appended Anomaly Header columns
+                // 🌟 UPDATED: Appended Anomaly Header columns
                 dataFile.println("Index,Timestamp,AQI,PM2.5,PM10,CO2,TVOC_Grade,CH2O,CO,O3,NO2,Temp,Hum,MAD_Spike,WHO_Limit");
             }
             dataFile.close();
@@ -303,7 +298,6 @@ void loop() {
             Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
-            // Client ID for Budiriro Node
             snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
@@ -358,11 +352,11 @@ void loop() {
 
                     int currentAQI = calculateAQI(pm25);
 
-                    // Execute Anomaly Algorithms
+                    // 🌟 UPDATED: Execute Anomaly Algorithms
                     int mad_flag_pm25 = calculateMadAnomaly((float)pm25);
                     int h_flag_pm25 = heaviside((float)pm25, LIMIT_PM25);
 
-                    // Update sliding window buffer
+                    // 🌟 UPDATED: Update sliding window buffer
                     pm25_history[history_idx] = (float)pm25;
                     history_idx = (history_idx + 1) % WINDOW_SIZE;
                     if (readings_count < WINDOW_SIZE) readings_count++;
@@ -372,7 +366,6 @@ void loop() {
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
-                    // 🌟 Formatted to fit 20-char LCD: "T: " + 17 chars = 20
                     lcd.print("T: "); lcd.print(netTime);
                     
                     lcd.setCursor(0, 3);
@@ -402,7 +395,7 @@ void loop() {
                         dataFile.print(temp, 1); dataFile.print(",");
                         dataFile.print(hum, 0); dataFile.print(",");
                         
-                        // Append Anomaly Flags to SD Card
+                        // 🌟 UPDATED: Append Anomaly Flags to SD Card
                         dataFile.print(mad_flag_pm25); dataFile.print(",");
                         dataFile.println(h_flag_pm25);
                         
@@ -431,11 +424,11 @@ void loop() {
                         doc["o3"]   = o3;
                         doc["no2"]  = no2;
 
-                        // Add Anomaly Flags to Cloud Telemetry
+                        // 🌟 UPDATED: Add Anomaly Flags to Cloud Telemetry
                         //doc["mad_spike_pm25"] = mad_flag_pm25;
                         //doc["heaviside_pm25"] = h_flag_pm25;
                         
-                        // Buffer slightly increased to accommodate new variables
+                        // 🌟 UPDATED: Buffer size adjusted to accommodate new AI variables
                         char jb[512]; 
                         serializeJson(doc, jb);
                         
