@@ -51,7 +51,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
-// Hardcoded coordinates for Mt. Pleasant, Harare
+// Hardcoded coordinates for Budiriro, Harare
 const float lat = -17.8700;
 const float lon = 30.9000;
 
