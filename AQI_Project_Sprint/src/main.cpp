@@ -5,6 +5,9 @@
 #include <SD.h>
 
 #include <TinyGsmClient.h>
+
+// 🌟 FIX: Force PubSubClient to handle larger 512-byte JSON strings 
+#define MQTT_MAX_PACKET_SIZE 512
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
@@ -17,8 +20,8 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
-// 🌟 UPDATED: Distinct topic for the Budiriro Node (esp32_02)
-const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
+// Distinct topic for the Mt. Pleasant Node
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -52,20 +55,68 @@ float temp = 0.0, hum = 0.0;
 const float lat = -17.8700;
 const float lon = 30.9000;
 
-char netTime[16] = "Syncing..."; 
+// Buffer to hold full YY/MM/DD HH:MM:SS
+char netTime[24] = "Syncing..."; 
 
 // Global Data Index Counter
 uint32_t msgIndex = 1;
 
-// --- Timers ---
+// --- EDGE AI & ANOMALY DETECTION ---
+const float LIMIT_PM25 = 15.0;  
+const int WINDOW_SIZE = 10;
+float pm25_history[WINDOW_SIZE];
+int history_idx = 0;
+int readings_count = 0;
+const float MAD_THRESHOLD_MULTIPLIER = 3.0; 
+
+// --- Timers & Safe Watchdogs ---
 unsigned long lastRequest = 0;
 unsigned long lastReconnectAttempt = 0; 
 unsigned long lastGprsAttempt = 0;
 unsigned long lastTimeSync = 0;
 uint8_t dataBuf[26];
 
+// 🌟 UPDATED: Fail-Safe Auto-Reboot Counters
+uint8_t mqttTimeoutCounter = 0;
+const uint8_t MAX_MQTT_THRESH = 3; 
+
 // 5-Minute sampling interval in milliseconds
 const unsigned long SEND_INTERVAL = 300000UL; 
+
+// --- ALGORITHMS ---
+
+int heaviside(float value, float limit) {
+    return (value >= limit) ? 1 : 0;
+}
+
+float getMedian(float data[], int size) {
+    float tempArray[size];
+    memcpy(tempArray, data, size * sizeof(float));
+    for(int i = 0; i < size - 1; i++) {
+        for(int j = i + 1; j < size; j++) {
+            if(tempArray[i] > tempArray[j]) {
+                float t = tempArray[i];
+                tempArray[i] = tempArray[j];
+                tempArray[j] = t;
+            }
+        }
+    }
+    if(size % 2 == 0) return (tempArray[size/2 - 1] + tempArray[size/2]) / 2.0;
+    return tempArray[size/2];
+}
+
+int calculateMadAnomaly(float newValue) {
+    if (readings_count < WINDOW_SIZE) return 0;
+    float median = getMedian(pm25_history, WINDOW_SIZE);
+    float deviations[WINDOW_SIZE];
+    for(int i = 0; i < WINDOW_SIZE; i++) {
+        deviations[i] = abs(pm25_history[i] - median);
+    }
+    float mad = getMedian(deviations, WINDOW_SIZE);
+    if (mad == 0) mad = 1.0; 
+    float current_deviation = abs(newValue - median);
+    return (current_deviation > (MAD_THRESHOLD_MULTIPLIER * mad)) ? 1 : 0;
+}
 
 bool isModemAwake() {
     for (int i = 0; i < 4; i++) {
@@ -127,16 +178,26 @@ void updateNetworkTime() {
         size_t len = modem.stream.readBytesUntil('\n', res, sizeof(res) - 1);
         res[len] = '\0'; 
         
-        char* commaIndex = strchr(res, ',');
-        if (commaIndex != nullptr) {
-            char* tzIndex = strchr(commaIndex, '+');
-            if (!tzIndex) tzIndex = strchr(commaIndex, '-'); 
-            
-            if (tzIndex != nullptr) {
-                *tzIndex = '\0'; 
-                strlcpy(netTime, commaIndex + 1, sizeof(netTime)); 
-            }
+        char* start = strchr(res, '"'); 
+        if (start) {
+            start++; 
+        } else {
+            start = res; 
         }
+        
+        char* tzIndex = strchr(start, '+'); 
+        if (!tzIndex) tzIndex = strchr(start, '-'); 
+        
+        if (tzIndex != nullptr) {
+            *tzIndex = '\0'; 
+        }
+        
+        char* commaIndex = strchr(start, ',');
+        if (commaIndex != nullptr) {
+            *commaIndex = ' '; 
+        }
+        
+        strlcpy(netTime, start, sizeof(netTime)); 
     }
 }
 
@@ -176,10 +237,9 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    // 🌟 UPDATED: LCD Header
-    lcd.print("BUDIRIRO NODE       ");
+    lcd.print("MT PLEASANT NODE");
 
-    // Initialize local SD Card Storage
+    // 🌟 NEW: Initialize local SD Card Storage
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
     if (!SD.begin(SD_CS, SPI)) {
@@ -188,18 +248,16 @@ void setup() {
         delay(2000);
     } else {
         Serial.println(" OK.");
-        // Create file and inject CSV headers if the file is fresh/empty
         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
         if (dataFile) {
             if (dataFile.size() == 0) {
-                dataFile.println("Index,Timestamp,AQI,PM2.5,PM10,CO2,TVOC_Grade,CH2O,CO,O3,NO2,Temp,Hum");
+                dataFile.println("Index,Timestamp,AQI,PM2.5,PM10,CO2,TVOC_Grade,CH2O,CO,O3,NO2,Temp,Hum,MAD_Spike,WHO_Limit");
             }
             dataFile.close();
         }
     }
 
     randomSeed(analogRead(0));
-
     powerModemResilient();
 
     lcd.setCursor(0, 1); lcd.print("Modem: Syncing...   ");
@@ -223,7 +281,6 @@ void setup() {
     }
 
     syncNTP();
-    
     mqtt.setServer(mqtt_server, mqtt_port); 
     mqtt.setSocketTimeout(30); 
 }
@@ -242,14 +299,37 @@ void loop() {
             Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
-            // 🌟 UPDATED: Client ID for Budiriro Node
-            snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
+            snprintf(clientId, sizeof(clientId), "MtPleasant_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
+                mqttTimeoutCounter = 0; // Clear timeout counters on success
             } else {
+                int8_t errState = mqtt.state();
                 Serial.print("FAILED, rc=");
-                Serial.println(mqtt.state()); 
+                Serial.println(errState); 
+                
+                // 🌟 FIX: Watchdog monitoring logic for a hard socket freeze (-4 Connection Timeout)
+                if (errState == -4) { 
+                    mqttTimeoutCounter++;
+                    Serial.print("[System] Watchdog: Consecutive -4 timeouts = ");
+                    Serial.println(mqttTimeoutCounter);
+                    
+                    if (mqttTimeoutCounter >= MAX_MQTT_THRESH) {
+                        Serial.println("[CRITICAL] Socket frozen. Triggering automatic hardware recovery reset...");
+                        
+                        lcd.clear();
+                        lcd.setCursor(0, 0); lcd.print("CRITICAL MQTT ERR");
+                        lcd.setCursor(0, 1); lcd.print("State: -4 (Timeout)");
+                        lcd.setCursor(0, 2); lcd.print("Rebooting Node...  ");
+                        
+                        delay(3000); 
+                        ESP.restart(); // 🔥 Executes automated software-triggered board reboot
+                    }
+                } else {
+                    // For any other structural rejection errors, don't trigger the reboot counter
+                    mqttTimeoutCounter = 0;
+                }
             }
         }
     } else {
@@ -297,12 +377,19 @@ void loop() {
 
                     int currentAQI = calculateAQI(pm25);
 
+                    int mad_flag_pm25 = calculateMadAnomaly((float)pm25);
+                    int h_flag_pm25 = heaviside((float)pm25, LIMIT_PM25);
+
+                    pm25_history[history_idx] = (float)pm25;
+                    history_idx = (history_idx + 1) % WINDOW_SIZE;
+                    if (readings_count < WINDOW_SIZE) readings_count++;
+
                     lcd.setCursor(0, 0);
                     lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
                     lcd.print("CO2:"); lcd.print(co2); lcd.print("  PM2.5:"); lcd.print(pm25);
                     lcd.setCursor(0, 2);
-                    lcd.print("TIME: "); lcd.print(netTime);
+                    lcd.print("T: "); lcd.print(netTime);
                     
                     lcd.setCursor(0, 3);
                     if (mqtt.connected()) {
@@ -314,7 +401,7 @@ void loop() {
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    // Write telemetry matrix locally to SD card
+                    // 🌟 NEW: Write telemetry matrix locally to SD card
                     File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                     if (dataFile) {
                         dataFile.print(msgIndex); dataFile.print(",");
@@ -329,7 +416,11 @@ void loop() {
                         dataFile.print(o3, 2); dataFile.print(",");
                         dataFile.print(no2, 2); dataFile.print(",");
                         dataFile.print(temp, 1); dataFile.print(",");
-                        dataFile.println(hum, 0);
+                        dataFile.print(hum, 0); dataFile.print(",");
+                        
+                        dataFile.print(mad_flag_pm25); dataFile.print(",");
+                        dataFile.println(h_flag_pm25);
+                        
                         dataFile.close();
                         Serial.println("[SD] Row appended to datalog.csv");
                     } else {
@@ -354,18 +445,20 @@ void loop() {
                         doc["co"]   = co;
                         doc["o3"]   = o3;
                         doc["no2"]  = no2;
+
+                        // 🌟 NOTE: Uncomment these if your EMQX backend expects the AI flags
+                        // doc["mad_spike_pm25"] = mad_flag_pm25;
+                        // doc["heaviside_pm25"] = h_flag_pm25;
                         
-                        char jb[384]; 
+                        char jb[512]; 
                         serializeJson(doc, jb);
                         
                         if (mqtt.publish(mqtt_topic, jb)) {
                             Serial.print("[MQTT] Telemetry Dispatched. Index: ");
                             Serial.println(msgIndex);
-                            
                             msgIndex++; 
                         }
                     } else {
-                        // If offline, still advance the index so the CSV and future MQTT drops match chronologically
                         Serial.print("[MQTT] Device Offline. Local save successful. Index: ");
                         Serial.println(msgIndex);
                         msgIndex++; 
