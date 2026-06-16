@@ -20,8 +20,8 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
-// Distinct topic for the Mt. Pleasant Node
-const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data"; 
+// Distinct topic for Budiriro Node (esp32_02)
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -51,7 +51,7 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
-// 🌟 UPDATED: Hardcoded coordinates for Budiriro, Harare
+// Hardcoded coordinates for Mt. Pleasant, Harare
 const float lat = -17.8700;
 const float lon = 30.9000;
 
@@ -237,9 +237,8 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    lcd.print("MT PLEASANT NODE");
+    lcd.print("Mt Pleasant Node       ");
 
-    // 🌟 NEW: Initialize local SD Card Storage
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
     if (!SD.begin(SD_CS, SPI)) {
@@ -299,6 +298,7 @@ void loop() {
             Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
+            // 🌟 FIX: Updated client ID profile prefix matching your location configuration
             snprintf(clientId, sizeof(clientId), "MtPleasant_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
@@ -401,7 +401,6 @@ void loop() {
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    // 🌟 NEW: Write telemetry matrix locally to SD card
                     File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                     if (dataFile) {
                         dataFile.print(msgIndex); dataFile.print(",");
