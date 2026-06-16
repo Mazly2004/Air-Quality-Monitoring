@@ -237,7 +237,7 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    lcd.print("Mt Pleasant Node       ");
+    lcd.print("Mt Budiriro Node       ");
 
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
