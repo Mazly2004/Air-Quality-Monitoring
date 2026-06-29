@@ -52,8 +52,8 @@ uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
 // Hardcoded coordinates for Budiriro, Harare
-const float lat = -17.7800;
-const float lon = 30.0500;
+const float lat = -17.8700;
+const float lon = 30.9000;
 
 // Buffer to hold full YY/MM/DD HH:MM:SS
 char netTime[24] = "Syncing..."; 
@@ -237,7 +237,7 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    lcd.print("Mt Pleasant Node");  
+    lcd.print("Budiriro Node");  
 
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
@@ -299,7 +299,7 @@ void loop() {
             
             char clientId[32];
             // 🌟 FIX: Updated client ID profile prefix matching your location configuration
-            snprintf(clientId, sizeof(clientId), "MtPleasant_%04lX", random(0xffff));
+            snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
