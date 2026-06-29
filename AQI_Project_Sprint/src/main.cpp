@@ -309,25 +309,27 @@ void loop() {
                 Serial.print("FAILED, rc=");
                 Serial.println(errState); 
                 
-                // 🌟 FIX: Watchdog monitoring logic for a hard socket freeze (-4 Connection Timeout)
-                if (errState == -4) { 
+                // 🌟 FIX: Watchdog monitoring logic for hard socket freezes (-4 Timeout, -2 Connect Failed)
+                if (errState == -4 || errState == -2) { 
                     mqttTimeoutCounter++;
-                    Serial.print("[System] Watchdog: Consecutive -4 timeouts = ");
+                    Serial.print("[System] Watchdog: Consecutive -4/-2 failures = ");
                     Serial.println(mqttTimeoutCounter);
                     
                     if (mqttTimeoutCounter >= MAX_MQTT_THRESH) {
-                        Serial.println("[CRITICAL] Socket frozen. Triggering automatic hardware recovery reset...");
+                        Serial.println("[CRITICAL] Socket/TLS frozen. Triggering automatic hardware recovery reset...");
                         
                         lcd.clear();
                         lcd.setCursor(0, 0); lcd.print("CRITICAL MQTT ERR");
-                        lcd.setCursor(0, 1); lcd.print("State: -4 (Timeout)");
+                        lcd.setCursor(0, 1); 
+                        if (errState == -4) lcd.print("State: -4 (Timeout)");
+                        if (errState == -2) lcd.print("State: -2 (TCP Fail)");
                         lcd.setCursor(0, 2); lcd.print("Rebooting Node...  ");
                         
                         delay(3000); 
                         ESP.restart(); // 🔥 Executes automated software-triggered board reboot
                     }
                 } else {
-                    // For any other structural rejection errors, don't trigger the reboot counter
+                    // Only reset counter for authentication/protocol rejections (e.g., 2, 4, 5)
                     mqttTimeoutCounter = 0;
                 }
             }
