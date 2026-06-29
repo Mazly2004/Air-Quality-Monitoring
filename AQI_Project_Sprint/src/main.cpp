@@ -20,8 +20,8 @@ const int mqtt_port = 8883;
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
-// Distinct topic for Budiriro Node (esp32_02)
-const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
+// Distinct topic for Mt Pleasant Node (esp32_03)
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
