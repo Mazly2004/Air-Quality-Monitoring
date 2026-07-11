@@ -22,6 +22,10 @@ const char* mqtt_pass = "Langton@emqx$#";
 // Distinct topic for Budiriro Node (esp32_02)
 const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
+// --- ThingSpeak Configuration ---
+const char* ts_server = "api.thingspeak.com";
+const char* ts_api_key = "YOUR_THINGSPEAK_API_KEY"; // <-- REPLACE WITH YOUR WRITE API KEY
+
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
 #define MODEM_RX     26
@@ -42,7 +46,8 @@ HardwareSerial SerialAT(1);
 HardwareSerial SerialSensor(2);  
 TinyGsm modem(SerialAT);
 
-TinyGsmClientSecure cellularClient(modem);
+TinyGsmClientSecure cellularClient(modem); // Primary Secure MQTT (EMQX)
+TinyGsmClient tsClient(modem);             // Secondary HTTP (ThingSpeak)
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
@@ -60,7 +65,7 @@ char netTime[24] = "Syncing...";
 // Global Data Index Counter
 uint32_t msgIndex = 1;
 
-// 🌟 FIXED: Defensive tracking flag to protect against uninitialized SD operations
+// Defensive tracking flag to protect against uninitialized SD operations
 bool sdCardReady = false; 
 
 // --- EDGE AI & ANOMALY DETECTION ---
@@ -173,7 +178,6 @@ void syncNTP() {
     modem.waitResponse(10000); 
 }
 
-// 🌟 FIXED: Explicitly extracts elements and formats into an unambiguous YYYY-MM-DD format
 void updateNetworkTime() {
     modem.sendAT("+CCLK?");
     if (modem.waitResponse(2000, "+CCLK: ") == 1) {
@@ -190,13 +194,10 @@ void updateNetworkTime() {
         
         int year, month, day, hour, minute, second;
         
-        // Explicitly parse the standard 3GPP format: "yy/mm/dd,hh:mm:ss"
         if (sscanf(start, "%d/%d/%d,%d:%d:%d", &year, &month, &day, &hour, &minute, &second) == 6) {
-            // Re-arrange components into unambiguous ISO standard (e.g., "2026-07-11 16:14:00")
             snprintf(netTime, sizeof(netTime), "20%02d-%02d-%02d %02d:%02d:%02d", 
                      year, month, day, hour, minute, second);
         } else {
-            // Fallback raw string parse if network attachment drops mid-frame
             char* tzIndex = strchr(start, '+'); 
             if (!tzIndex) tzIndex = strchr(start, '-'); 
             if (tzIndex != nullptr) *tzIndex = '\0'; 
@@ -253,7 +254,6 @@ void setup() {
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
     
-    // 🌟 FIXED: SD Initialization cleanly drives the defensive sdCardReady execution flag
     if (!SD.begin(SD_CS, SPI)) {
         Serial.println(" FAILED!");
         lcd.setCursor(0, 1); lcd.print("SD Card FAILED!     ");
@@ -290,7 +290,6 @@ void setup() {
     lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
     Serial.println("[Network] Attaching to Econet network...");
     
-    // 🌟 FIXED: NTP setup is safely embedded here to prevent running sync loops on unattached pipelines
     if (modem.gprsConnect(apn)) {
         lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE    ");
         Serial.println("[Network] Cellular data attached successfully.");
@@ -309,7 +308,7 @@ void loop() {
             lastGprsAttempt = millis();
             Serial.println("[Network] Link dropped. Repairing GPRS...");
             if (modem.gprsConnect(apn)) {
-                syncNTP(); // Re-sync clock whenever we successfully recover a dropped cell connection
+                syncNTP(); 
             }
         }
     } 
@@ -421,7 +420,6 @@ void loop() {
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    // 🌟 FIXED: Wrapped local data log tasks inside defensive check flag
                     if (sdCardReady) {
                         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                         if (dataFile) {
@@ -475,6 +473,26 @@ void loop() {
                         if (mqtt.publish(mqtt_topic, jb)) {
                             Serial.print("[MQTT] Telemetry Dispatched. Index: ");
                             Serial.println(msgIndex);
+                            
+                            // --- THINGSPEAK DISPATCH ---
+                            Serial.print("[ThingSpeak] Connecting... ");
+                            if (tsClient.connect(ts_server, 80)) {
+                                char tsRequest[384];
+                                snprintf(tsRequest, sizeof(tsRequest), 
+                                         "GET /update?api_key=%s&field1=%d&field2=%d&field3=%d&field4=%.1f&field5=%.0f&field6=%d HTTP/1.1\r\n"
+                                         "Host: %s\r\n"
+                                         "Connection: close\r\n\r\n", 
+                                         ts_api_key, pm25, pm10, co2, temp, hum, currentAQI, ts_server);
+                                         
+                                tsClient.print(tsRequest);
+                                delay(10); 
+                                tsClient.stop();
+                                Serial.println("OK.");
+                            } else {
+                                Serial.println("FAILED.");
+                            }
+                            // ---------------------------
+                            
                             msgIndex++; 
                         }
                     } else {
