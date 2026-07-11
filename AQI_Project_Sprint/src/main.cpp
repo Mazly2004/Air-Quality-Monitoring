@@ -54,7 +54,7 @@ float temp = 0.0, hum = 0.0;
 const float lat = -17.8700;
 const float lon = 30.9000;
 
-// Buffer to hold full YY/MM/DD HH:MM:SS
+// Buffer to hold full YYYY-MM-DD HH:MM:SS format
 char netTime[24] = "Syncing..."; 
 
 // Global Data Index Counter
@@ -173,6 +173,7 @@ void syncNTP() {
     modem.waitResponse(10000); 
 }
 
+// 🌟 FIXED: Explicitly extracts elements and formats into an unambiguous YYYY-MM-DD format
 void updateNetworkTime() {
     modem.sendAT("+CCLK?");
     if (modem.waitResponse(2000, "+CCLK: ") == 1) {
@@ -187,19 +188,27 @@ void updateNetworkTime() {
             start = res; 
         }
         
-        char* tzIndex = strchr(start, '+'); 
-        if (!tzIndex) tzIndex = strchr(start, '-'); 
+        int year, month, day, hour, minute, second;
         
-        if (tzIndex != nullptr) {
-            *tzIndex = '\0'; 
+        // Explicitly parse the standard 3GPP format: "yy/mm/dd,hh:mm:ss"
+        if (sscanf(start, "%d/%d/%d,%d:%d:%d", &year, &month, &day, &hour, &minute, &second) == 6) {
+            // Re-arrange components into unambiguous ISO standard (e.g., "2026-07-11 16:14:00")
+            snprintf(netTime, sizeof(netTime), "20%02d-%02d-%02d %02d:%02d:%02d", 
+                     year, month, day, hour, minute, second);
+        } else {
+            // Fallback raw string parse if network attachment drops mid-frame
+            char* tzIndex = strchr(start, '+'); 
+            if (!tzIndex) tzIndex = strchr(start, '-'); 
+            if (tzIndex != nullptr) *tzIndex = '\0'; 
+            
+            char* commaIndex = strchr(start, ',');
+            if (commaIndex != nullptr) *commaIndex = ' '; 
+            
+            char* endQuote = strchr(start, '"');
+            if (endQuote != nullptr) *endQuote = '\0';
+            
+            strlcpy(netTime, start, sizeof(netTime)); 
         }
-        
-        char* commaIndex = strchr(start, ',');
-        if (commaIndex != nullptr) {
-            *commaIndex = ' '; 
-        }
-        
-        strlcpy(netTime, start, sizeof(netTime)); 
     }
 }
 
@@ -244,7 +253,7 @@ void setup() {
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
     
-    // 🌟 FIXED: SD Initialization now cleanly drives the defensive sdCardReady execution flag
+    // 🌟 FIXED: SD Initialization cleanly drives the defensive sdCardReady execution flag
     if (!SD.begin(SD_CS, SPI)) {
         Serial.println(" FAILED!");
         lcd.setCursor(0, 1); lcd.print("SD Card FAILED!     ");
@@ -412,7 +421,7 @@ void loop() {
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    // 🌟 FIXED: Wrapped local data log tasks inside the defensive check flag
+                    // 🌟 FIXED: Wrapped local data log tasks inside defensive check flag
                     if (sdCardReady) {
                         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                         if (dataFile) {
