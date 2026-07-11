@@ -24,7 +24,7 @@ const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data";
 
 // --- ThingSpeak Configuration ---
 const char* ts_server = "api.thingspeak.com";
-const char* ts_api_key = "YOUR_THINGSPEAK_API_KEY"; // <-- REPLACE WITH YOUR WRITE API KEY
+const char* ts_api_key = "FND4XOKB1LXD9C4N"; // <-- REPLACE WITH YOUR WRITE API KEY
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
