@@ -3,11 +3,10 @@
 #include <LiquidCrystal_I2C.h>
 #include <SPI.h>
 #include <SD.h>
-
 #include <TinyGsmClient.h>
 
-// 🌟 FIX: Force PubSubClient to handle larger 512-byte JSON strings 
-#define MQTT_MAX_PACKET_SIZE 512
+// 🌟 FIXED: Bumped to 768 to comfortably fit 512-byte JSON strings + MQTT protocol/topic overhead
+#define MQTT_MAX_PACKET_SIZE 768
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 
@@ -61,6 +60,9 @@ char netTime[24] = "Syncing...";
 // Global Data Index Counter
 uint32_t msgIndex = 1;
 
+// 🌟 FIXED: Defensive tracking flag to protect against uninitialized SD operations
+bool sdCardReady = false; 
+
 // --- EDGE AI & ANOMALY DETECTION ---
 const float LIMIT_PM25 = 15.0;  
 const int WINDOW_SIZE = 10;
@@ -76,7 +78,7 @@ unsigned long lastGprsAttempt = 0;
 unsigned long lastTimeSync = 0;
 uint8_t dataBuf[26];
 
-// 🌟 UPDATED: Fail-Safe Auto-Reboot Counters
+// Fail-Safe Auto-Reboot Counters
 uint8_t mqttTimeoutCounter = 0;
 const uint8_t MAX_MQTT_THRESH = 3; 
 
@@ -241,12 +243,16 @@ void setup() {
 
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
+    
+    // 🌟 FIXED: SD Initialization now cleanly drives the defensive sdCardReady execution flag
     if (!SD.begin(SD_CS, SPI)) {
         Serial.println(" FAILED!");
         lcd.setCursor(0, 1); lcd.print("SD Card FAILED!     ");
+        sdCardReady = false;
         delay(2000);
     } else {
         Serial.println(" OK.");
+        sdCardReady = true;
         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
         if (dataFile) {
             if (dataFile.size() == 0) {
@@ -274,12 +280,16 @@ void setup() {
 
     lcd.setCursor(0, 2); lcd.print("GPRS: Connecting... ");
     Serial.println("[Network] Attaching to Econet network...");
+    
+    // 🌟 FIXED: NTP setup is safely embedded here to prevent running sync loops on unattached pipelines
     if (modem.gprsConnect(apn)) {
         lcd.setCursor(0, 3); lcd.print("STATUS: ONLINE    ");
         Serial.println("[Network] Cellular data attached successfully.");
+        syncNTP(); 
+    } else {
+        Serial.println("[Network] Initial GPRS attachment failed. Will retry dynamically in loop.");
     }
 
-    syncNTP();
     mqtt.setServer(mqtt_server, mqtt_port); 
     mqtt.setSocketTimeout(30); 
 }
@@ -289,7 +299,9 @@ void loop() {
         if (millis() - lastGprsAttempt > 20000) {
             lastGprsAttempt = millis();
             Serial.println("[Network] Link dropped. Repairing GPRS...");
-            modem.gprsConnect(apn);
+            if (modem.gprsConnect(apn)) {
+                syncNTP(); // Re-sync clock whenever we successfully recover a dropped cell connection
+            }
         }
     } 
     else if (!mqtt.connected()) {
@@ -298,18 +310,16 @@ void loop() {
             Serial.print("[MQTT] Connecting to secure cloud cluster... ");
             
             char clientId[32];
-            // 🌟 FIX: Updated client ID profile prefix matching your location configuration
             snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
-                mqttTimeoutCounter = 0; // Clear timeout counters on success
+                mqttTimeoutCounter = 0; 
             } else {
                 int8_t errState = mqtt.state();
                 Serial.print("FAILED, rc=");
                 Serial.println(errState); 
                 
-                // 🌟 FIX: Watchdog monitoring logic for hard socket freezes (-4 Timeout, -2 Connect Failed)
                 if (errState == -4 || errState == -2) { 
                     mqttTimeoutCounter++;
                     Serial.print("[System] Watchdog: Consecutive -4/-2 failures = ");
@@ -326,10 +336,9 @@ void loop() {
                         lcd.setCursor(0, 2); lcd.print("Rebooting Node...  ");
                         
                         delay(3000); 
-                        ESP.restart(); // 🔥 Executes automated software-triggered board reboot
+                        ESP.restart(); 
                     }
                 } else {
-                    // Only reset counter for authentication/protocol rejections (e.g., 2, 4, 5)
                     mqttTimeoutCounter = 0;
                 }
             }
@@ -403,29 +412,33 @@ void loop() {
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
-                    File dataFile = SD.open("/datalog.csv", FILE_APPEND);
-                    if (dataFile) {
-                        dataFile.print(msgIndex); dataFile.print(",");
-                        dataFile.print(netTime); dataFile.print(",");
-                        dataFile.print(currentAQI); dataFile.print(",");
-                        dataFile.print(pm25); dataFile.print(",");
-                        dataFile.print(pm10); dataFile.print(",");
-                        dataFile.print(co2); dataFile.print(",");
-                        dataFile.print(tvoc_grade); dataFile.print(",");
-                        dataFile.print(ch2o, 3); dataFile.print(",");
-                        dataFile.print(co, 1); dataFile.print(",");
-                        dataFile.print(o3, 2); dataFile.print(",");
-                        dataFile.print(no2, 2); dataFile.print(",");
-                        dataFile.print(temp, 1); dataFile.print(",");
-                        dataFile.print(hum, 0); dataFile.print(",");
-                        
-                        dataFile.print(mad_flag_pm25); dataFile.print(",");
-                        dataFile.println(h_flag_pm25);
-                        
-                        dataFile.close();
-                        Serial.println("[SD] Row appended to datalog.csv");
+                    // 🌟 FIXED: Wrapped local data log tasks inside the defensive check flag
+                    if (sdCardReady) {
+                        File dataFile = SD.open("/datalog.csv", FILE_APPEND);
+                        if (dataFile) {
+                            dataFile.print(msgIndex); dataFile.print(",");
+                            dataFile.print(netTime); dataFile.print(",");
+                            dataFile.print(currentAQI); dataFile.print(",");
+                            dataFile.print(pm25); dataFile.print(",");
+                            dataFile.print(pm10); dataFile.print(",");
+                            dataFile.print(co2); dataFile.print(",");
+                            dataFile.print(tvoc_grade); dataFile.print(",");
+                            dataFile.print(ch2o, 3); dataFile.print(",");
+                            dataFile.print(co, 1); dataFile.print(",");
+                            dataFile.print(o3, 2); dataFile.print(",");
+                            dataFile.print(no2, 2); dataFile.print(",");
+                            dataFile.print(temp, 1); dataFile.print(",");
+                            dataFile.print(hum, 0); dataFile.print(",");
+                            dataFile.print(mad_flag_pm25); dataFile.print(",");
+                            dataFile.println(h_flag_pm25);
+                            
+                            dataFile.close();
+                            Serial.println("[SD] Row appended to datalog.csv");
+                        } else {
+                            Serial.println("[SD] Warning: Failed to open datalog.csv file.");
+                        }
                     } else {
-                        Serial.println("[SD] Warning: Failed to open datalog.csv");
+                        Serial.println("[SD] Bypass: File logging skipped (SD module uninitialized/missing).");
                     }
 
                     if (mqtt.connected()) {
@@ -447,10 +460,6 @@ void loop() {
                         doc["o3"]   = o3;
                         doc["no2"]  = no2;
 
-                        // 🌟 NOTE: Uncomment these if your EMQX backend expects the AI flags
-                        // doc["mad_spike_pm25"] = mad_flag_pm25;
-                        // doc["heaviside_pm25"] = h_flag_pm25;
-                        
                         char jb[512]; 
                         serializeJson(doc, jb);
                         
@@ -460,7 +469,7 @@ void loop() {
                             msgIndex++; 
                         }
                     } else {
-                        Serial.print("[MQTT] Device Offline. Local save successful. Index: ");
+                        Serial.print("[MQTT] Device Offline. Local save evaluated. Index: ");
                         Serial.println(msgIndex);
                         msgIndex++; 
                     }
