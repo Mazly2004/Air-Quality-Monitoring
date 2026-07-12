@@ -5,7 +5,7 @@
 #include <SD.h>
 #include <TinyGsmClient.h>
 
-// 🌟 FIXED: Bumped to 768 to comfortably fit 512-byte JSON strings + MQTT protocol/topic overhead
+// Bumped to 768 to comfortably fit 512-byte JSON strings + MQTT protocol/topic overhead
 #define MQTT_MAX_PACKET_SIZE 768
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -15,11 +15,9 @@ const char apn[] = "econet.net";
 
 // BROKER: Private EMQX Serverless Cluster 
 const char* mqtt_server = "ya4f6956.ala.eu-central-1.emqxsl.com"; 
-const int mqtt_port = 1883; 
+const int mqtt_port = 8883; // MUST be 8883 for EMQX Serverless
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
-
-// Distinct topic for Budiriro Node (esp32_02)
 const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
 
 // --- ThingSpeak Configuration ---
@@ -35,7 +33,6 @@ const char* ts_api_key = "FND4XOKB1LXD9C4N"; // <-- REPLACE WITH YOUR WRITE API 
 #define I2C_SDA      21  
 #define I2C_SCL      22  
 
-// Built-in SD Card SPI Pins for LilyGo T-SIM7000G
 #define SPI_SCK      14
 #define SPI_MISO     2
 #define SPI_MOSI     15
@@ -46,26 +43,18 @@ HardwareSerial SerialAT(1);
 HardwareSerial SerialSensor(2);  
 TinyGsm modem(SerialAT);
 
-TinyGsmClient cellularClient(modem); // Primary  MQTT (EMQX)
-TinyGsmClient tsClient(modem);             // Secondary HTTP (ThingSpeak)
+TinyGsmClientSecure cellularClient(modem); // Primary Secure MQTT (EMQX)
+TinyGsmClient tsClient(modem);             // Secondary HTTP (ThingSpeak - Port 80)
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 // --- Global Telemetry Data ---
 uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
-
-// Hardcoded coordinates for Budiriro, Harare
 const float lat = -17.8700;
 const float lon = 30.9000;
-
-// Buffer to hold full YYYY-MM-DD HH:MM:SS format
 char netTime[24] = "Syncing..."; 
-
-// Global Data Index Counter
 uint32_t msgIndex = 1;
-
-// Defensive tracking flag to protect against uninitialized SD operations
 bool sdCardReady = false; 
 
 // --- EDGE AI & ANOMALY DETECTION ---
@@ -83,12 +72,9 @@ unsigned long lastGprsAttempt = 0;
 unsigned long lastTimeSync = 0;
 uint8_t dataBuf[26];
 
-// Fail-Safe Auto-Reboot Counters
 uint8_t mqttTimeoutCounter = 0;
 const uint8_t MAX_MQTT_THRESH = 3; 
-
-// 5-Minute sampling interval in milliseconds
-const unsigned long SEND_INTERVAL = 300000UL; 
+const unsigned long SEND_INTERVAL = 300000UL; // 5 Minutes
 
 // --- ALGORITHMS ---
 
@@ -248,7 +234,6 @@ void setup() {
 
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
-    
     lcd.print("Budiriro Node");  
 
     Serial.print("[System] Initializing SD Card...");
@@ -320,6 +305,8 @@ void loop() {
             char clientId[32];
             snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
+            // NOTE: This will fail (-2) if the SIM7000G firmware can't handle the EMQX TLS cert.
+            // But we will not let it block ThingSpeak anymore!
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
                 mqttTimeoutCounter = 0; 
@@ -335,14 +322,12 @@ void loop() {
                     
                     if (mqttTimeoutCounter >= MAX_MQTT_THRESH) {
                         Serial.println("[CRITICAL] Socket/TLS frozen. Triggering automatic hardware recovery reset...");
-                        
                         lcd.clear();
                         lcd.setCursor(0, 0); lcd.print("CRITICAL MQTT ERR");
                         lcd.setCursor(0, 1); 
                         if (errState == -4) lcd.print("State: -4 (Timeout)");
                         if (errState == -2) lcd.print("State: -2 (TCP Fail)");
                         lcd.setCursor(0, 2); lcd.print("Rebooting Node...  ");
-                        
                         delay(3000); 
                         ESP.restart(); 
                     }
@@ -355,6 +340,7 @@ void loop() {
         mqtt.loop();
     }
 
+    // Timer logic to fetch sensor data
     if (millis() - lastRequest > SEND_INTERVAL) {
         lastRequest = millis();
         
@@ -371,6 +357,7 @@ void loop() {
         }
     }
 
+    // Read and parse sensor data
     while (SerialSensor.available() > 0) {
         if (SerialSensor.peek() != 0xFF) {
             SerialSensor.read(); 
@@ -380,13 +367,12 @@ void loop() {
         if (SerialSensor.available() >= 26) {
             SerialSensor.readBytes(dataBuf, 26);
             if (dataBuf[1] == 0x86) {
-                
                 if (checkSensorChecksum(dataBuf)) {
+                    // 1. Map Data
                     pm25 = (uint16_t)dataBuf[4] << 8 | dataBuf[5];
                     co2  = (uint16_t)dataBuf[8] << 8 | dataBuf[9];
                     temp = ((((uint16_t)dataBuf[11] << 8) | dataBuf[12]) - 500.0f) * 0.1f;
                     hum  = ((uint16_t)dataBuf[13] << 8 | dataBuf[14]);
-
                     pm10        = (uint16_t)dataBuf[6] << 8 | dataBuf[7];
                     uint8_t tvoc_grade = dataBuf[10]; 
                     float ch2o  = ((uint16_t)dataBuf[15] << 8 | dataBuf[16]) * 0.001f; 
@@ -395,7 +381,6 @@ void loop() {
                     float no2   = ((uint16_t)dataBuf[21] << 8 | dataBuf[22]) * 0.01f;  
 
                     int currentAQI = calculateAQI(pm25);
-
                     int mad_flag_pm25 = calculateMadAnomaly((float)pm25);
                     int h_flag_pm25 = heaviside((float)pm25, LIMIT_PM25);
 
@@ -403,6 +388,7 @@ void loop() {
                     history_idx = (history_idx + 1) % WINDOW_SIZE;
                     if (readings_count < WINDOW_SIZE) readings_count++;
 
+                    // 2. LCD Display
                     lcd.setCursor(0, 0);
                     lcd.print("T:"); lcd.print(temp, 1); lcd.print("C H:"); lcd.print(hum, 0); lcd.print("%   ");
                     lcd.setCursor(0, 1);
@@ -416,10 +402,10 @@ void loop() {
                     } else {
                         lcd.print("MQ:"); lcd.print(mqtt.state()); lcd.print(" "); 
                     }
-                    
                     lcd.print("AQI:"); lcd.print(currentAQI); 
                     lcd.print(" #"); lcd.print(msgIndex);
 
+                    // 3. SD Card Log
                     if (sdCardReady) {
                         File dataFile = SD.open("/datalog.csv", FILE_APPEND);
                         if (dataFile) {
@@ -438,19 +424,14 @@ void loop() {
                             dataFile.print(hum, 0); dataFile.print(",");
                             dataFile.print(mad_flag_pm25); dataFile.print(",");
                             dataFile.println(h_flag_pm25);
-                            
                             dataFile.close();
                             Serial.println("[SD] Row appended to datalog.csv");
-                        } else {
-                            Serial.println("[SD] Warning: Failed to open datalog.csv file.");
                         }
-                    } else {
-                        Serial.println("[SD] Bypass: File logging skipped (SD module uninitialized/missing).");
                     }
 
+                    // 4. EMQX Publish (If Connected)
                     if (mqtt.connected()) {
                         JsonDocument doc;
-                        
                         doc["msg_idx"] = msgIndex; 
                         doc["pm25"] = pm25;
                         doc["co2"]  = co2;
@@ -471,35 +452,32 @@ void loop() {
                         serializeJson(doc, jb);
                         
                         if (mqtt.publish(mqtt_topic, jb)) {
-                            Serial.print("[MQTT] Telemetry Dispatched. Index: ");
-                            Serial.println(msgIndex);
-                            
-                            // --- THINGSPEAK DISPATCH ---
-                            Serial.print("[ThingSpeak] Connecting... ");
-                            if (tsClient.connect(ts_server, 80)) {
-                                char tsRequest[384];
-                                snprintf(tsRequest, sizeof(tsRequest), 
-                                         "GET /update?api_key=%s&field1=%d&field2=%d&field3=%d&field4=%.1f&field5=%.0f&field6=%d HTTP/1.1\r\n"
-                                         "Host: %s\r\n"
-                                         "Connection: close\r\n\r\n", 
-                                         ts_api_key, pm25, pm10, co2, temp, hum, currentAQI, ts_server);
-                                         
-                                tsClient.print(tsRequest);
-                                delay(10); 
-                                tsClient.stop();
-                                Serial.println("OK.");
-                            } else {
-                                Serial.println("FAILED.");
-                            }
-                            // ---------------------------
-                            
-                            msgIndex++; 
+                            Serial.println("[MQTT] EMQX Telemetry Dispatched.");
                         }
                     } else {
-                        Serial.print("[MQTT] Device Offline. Local save evaluated. Index: ");
-                        Serial.println(msgIndex);
-                        msgIndex++; 
+                        Serial.println("[MQTT] Device Offline. Local save evaluated.");
                     }
+
+                    // 5. THINGSPEAK DISPATCH (ALWAYS ATTEMPTED)
+                    Serial.print("[ThingSpeak] Connecting... ");
+                    if (tsClient.connect(ts_server, 80)) {
+                        char tsRequest[384];
+                        snprintf(tsRequest, sizeof(tsRequest), 
+                                 "GET /update?api_key=%s&field1=%d&field2=%d&field3=%d&field4=%.1f&field5=%.0f&field6=%d HTTP/1.1\r\n"
+                                 "Host: %s\r\n"
+                                 "Connection: close\r\n\r\n", 
+                                 ts_api_key, pm25, pm10, co2, temp, hum, currentAQI, ts_server);
+                                 
+                        tsClient.print(tsRequest);
+                        delay(10); 
+                        tsClient.stop();
+                        Serial.println("OK.");
+                    } else {
+                        Serial.println("FAILED.");
+                    }
+
+                    // Increment universal message counter
+                    msgIndex++; 
                 }
             }
         } else {
