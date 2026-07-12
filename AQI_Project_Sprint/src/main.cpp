@@ -15,7 +15,7 @@ const char apn[] = "econet.net";
 
 // BROKER: Private EMQX Serverless Cluster 
 const char* mqtt_server = "ya4f6956.ala.eu-central-1.emqxsl.com"; 
-const int mqtt_port = 8883; 
+const int mqtt_port = 1883; 
 const char* mqtt_user = "harare_esp32_client"; 
 const char* mqtt_pass = "Langton@emqx$#"; 
 
@@ -46,7 +46,7 @@ HardwareSerial SerialAT(1);
 HardwareSerial SerialSensor(2);  
 TinyGsm modem(SerialAT);
 
-TinyGsmClientSecure cellularClient(modem); // Primary Secure MQTT (EMQX)
+TinyGsmClient cellularClient(modem); // Primary  MQTT (EMQX)
 TinyGsmClient tsClient(modem);             // Secondary HTTP (ThingSpeak)
 PubSubClient mqtt(cellularClient);
 LiquidCrystal_I2C lcd(0x27, 20, 4);
