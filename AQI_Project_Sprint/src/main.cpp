@@ -22,7 +22,7 @@ const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data";
 
 // --- ThingSpeak Configuration ---
 const char* ts_server = "api.thingspeak.com";
-const char* ts_api_key = "FND4XOKB1LXD9C4N"; // <-- REPLACE WITH YOUR WRITE API KEY
+const char* ts_api_key = "FND4XOKB1LXD9C4N"; // Your Write API Key
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -305,8 +305,6 @@ void loop() {
             char clientId[32];
             snprintf(clientId, sizeof(clientId), "Budiriro_%04lX", random(0xffff));
             
-            // NOTE: This will fail (-2) if the SIM7000G firmware can't handle the EMQX TLS cert.
-            // But we will not let it block ThingSpeak anymore!
             if (mqtt.connect(clientId, mqtt_user, mqtt_pass)) {
                 Serial.println("CONNECTED SUCCESSFULLY!");
                 mqttTimeoutCounter = 0; 
@@ -321,15 +319,15 @@ void loop() {
                     Serial.println(mqttTimeoutCounter);
                     
                     if (mqttTimeoutCounter >= MAX_MQTT_THRESH) {
-                        Serial.println("[CRITICAL] Socket/TLS frozen. Triggering automatic hardware recovery reset...");
+                        Serial.println("[CRITICAL] EMQX TLS rejected. Bypassing EMQX so ThingSpeak can run...");
                         lcd.clear();
-                        lcd.setCursor(0, 0); lcd.print("CRITICAL MQTT ERR");
-                        lcd.setCursor(0, 1); 
-                        if (errState == -4) lcd.print("State: -4 (Timeout)");
-                        if (errState == -2) lcd.print("State: -2 (TCP Fail)");
-                        lcd.setCursor(0, 2); lcd.print("Rebooting Node...  ");
-                        delay(3000); 
-                        ESP.restart(); 
+                        lcd.setCursor(0, 0); lcd.print("EMQX TLS REJECTED");
+                        lcd.setCursor(0, 1); lcd.print("Bypassing for 10m");
+                        delay(2000); // Give user a moment to read it before sensor updates LCD
+                        
+                        // Bypass EMQX for 10 minutes so ThingSpeak gets priority
+                        lastReconnectAttempt = millis() + 600000; 
+                        mqttTimeoutCounter = 0; 
                     }
                 } else {
                     mqttTimeoutCounter = 0;
