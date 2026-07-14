@@ -301,6 +301,8 @@ void setup() {
 
     mqtt.setServer(mqtt_server, mqtt_port); 
     mqtt.setSocketTimeout(120); 
+     // Tell the EMQX server not to drop us if we are slow to reply
+    mqtt.setKeepAlive(120);
     
 }
 
