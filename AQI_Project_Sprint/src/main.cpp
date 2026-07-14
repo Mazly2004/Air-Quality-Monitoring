@@ -300,7 +300,8 @@ void setup() {
     }
 
     mqtt.setServer(mqtt_server, mqtt_port); 
-    mqtt.setSocketTimeout(30); 
+    mqtt.setSocketTimeout(120); 
+    
 }
 
 void loop() {
