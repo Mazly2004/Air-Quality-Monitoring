@@ -20,7 +20,7 @@ const char* mqtt_user = "harare_esp32_client";
 const char* mqtt_pass = "Langton@emqx$#"; 
 
 // Distinct topic for Budiriro Node (esp32_02)
-const char* mqtt_topic = "td_aqm/fixed/node/esp32_02/data"; 
+const char* mqtt_topic = "td_aqm/fixed/node/esp32_03/data"; 
 
 // --- Pinout (LilyGo T-SIM7000G) ---
 #define MODEM_TX     27
@@ -51,8 +51,8 @@ uint16_t pm25 = 0, co2 = 0, pm10 = 0;
 float temp = 0.0, hum = 0.0;
 
 // Hardcoded coordinates for Budiriro, Harare
-const float lat = -17.8700;
-const float lon = 30.9000;
+const float lat = -17.7000;
+const float lon = 31.1000;
 
 // Buffer to hold full YYYY-MM-DD HH:MM:SS format
 char netTime[24] = "Syncing..."; 
@@ -248,7 +248,7 @@ void setup() {
     Wire.begin(I2C_SDA, I2C_SCL);
     lcd.init(); lcd.backlight();
     
-    lcd.print("Budiriro Node");  
+    lcd.print("UZ Node");  
 
     Serial.print("[System] Initializing SD Card...");
     SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI, SD_CS);
